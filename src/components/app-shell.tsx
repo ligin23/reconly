@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { sampleData, type FileMeta } from "@/lib/sample-data";
-import { parseCsv } from "@/lib/parser";
+import { parseCsv, inspectCsv, type CsvColumnMap, type CsvInspection } from "@/lib/parser";
 import { reconcile } from "@/lib/recon";
 import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
 import type { Match, Txn, BalanceProof, MatchStatus } from "@/lib/recon/types";
@@ -14,11 +14,12 @@ import {
   type UploadFiles,
   type UploadSide,
 } from "@/components/screens/upload-screen";
+import { MappingScreen } from "@/components/screens/mapping-screen";
 import { ProcessingScreen } from "@/components/screens/processing-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
 import { ReviewScreen, type ReviewDecision } from "@/components/screens/review-screen";
 
-type Screen = "upload" | "processing" | "dashboard" | "review";
+type Screen = "upload" | "mapping" | "processing" | "dashboard" | "review";
 
 // ---- Engine output held after a successful run -----------------------
 type EngineOutput = {
@@ -47,11 +48,11 @@ function Sidebar({
   go: (s: Screen) => void;
 }) {
   const steps: { key: Screen; n: number; label: string; screens: Screen[] }[] = [
-    { key: "upload", n: 1, label: "Upload files", screens: ["upload"] },
+    { key: "upload", n: 1, label: "Upload files", screens: ["upload", "mapping"] },
     { key: "dashboard", n: 2, label: "Results", screens: ["dashboard"] },
     { key: "review", n: 3, label: "Review", screens: ["review"] },
   ];
-  const activeIndex = screen === "upload" ? 0 : screen === "review" ? 2 : 1;
+  const activeIndex = screen === "upload" || screen === "mapping" ? 0 : screen === "review" ? 2 : 1;
 
   return (
     <aside
@@ -191,6 +192,7 @@ function TopBar({
 }) {
   const titles: Record<Screen, [string, string]> = {
     upload: ["New reconciliation", sampleData.account.periodRange],
+    mapping: ["Confirm columns", "Tell us what each column means"],
     processing: ["Working…", sampleData.account.periodRange],
     dashboard: [
       "Results",
@@ -269,6 +271,16 @@ export function AppShell() {
   // ---- Engine output (immutable once set per run) -------------------
   const [engineOutput, setEngineOutput] = useState<EngineOutput | null>(null);
 
+  // ---- Column-mapping state ----------------------------------------
+  // Inspections are produced when the user clicks "Start analysis" and shown
+  // on the mapping screen. Confirmed maps are passed into parseCsv on the
+  // processing step. Both reset on Start over / Remove file.
+  const [inspections, setInspections] = useState<{
+    bank: CsvInspection;
+    ledger: CsvInspection;
+  } | null>(null);
+  const confirmedMapsRef = useRef<{ bank: CsvColumnMap; ledger: CsvColumnMap } | null>(null);
+
   // ---- Mutable match statuses (Accept / Reject / Manual) -----------
   const [matches, setMatches] = useState<Match[]>([]);
 
@@ -325,7 +337,20 @@ export function AppShell() {
       .catch(console.error);
   };
 
-  const startAnalysis = () => setScreen("processing");
+  const startAnalysis = () => {
+    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
+    if (!bankContent || !ledgerContent) return;
+    setInspections({
+      bank: inspectCsv(bankContent),
+      ledger: inspectCsv(ledgerContent),
+    });
+    setScreen("mapping");
+  };
+
+  const confirmMapping = (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => {
+    confirmedMapsRef.current = maps;
+    setScreen("processing");
+  };
 
   // useCallback with empty deps — reads from ref, not state, so no stale closure.
   const onProcessed = useCallback(() => {
@@ -337,8 +362,9 @@ export function AppShell() {
       return;
     }
 
-    const bankTxns = parseCsv(bankContent, "bank");
-    const ledgerTxns = parseCsv(ledgerContent, "ledger");
+    const maps = confirmedMapsRef.current;
+    const bankTxns = parseCsv(bankContent, "bank", maps?.bank);
+    const ledgerTxns = parseCsv(ledgerContent, "ledger", maps?.ledger);
     const result = reconcile(bankTxns, ledgerTxns);
 
     // Update the file metadata with real row counts.
@@ -361,7 +387,9 @@ export function AppShell() {
 
   const startOver = () => {
     fileContentsRef.current = { bank: null, ledger: null };
+    confirmedMapsRef.current = null;
     setFiles({ bank: null, ledger: null });
+    setInspections(null);
     setEngineOutput(null);
     setMatches([]);
     setAnalyzed(false);
@@ -424,6 +452,15 @@ export function AppShell() {
                 onRemove={removeFile}
                 onSample={useSample}
                 onStart={startAnalysis}
+              />
+            )}
+
+            {screen === "mapping" && inspections && (
+              <MappingScreen
+                bank={inspections.bank}
+                ledger={inspections.ledger}
+                onBack={() => setScreen("upload")}
+                onConfirm={confirmMapping}
               />
             )}
 

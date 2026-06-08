@@ -177,7 +177,12 @@ export function reconcile(
         });
       } else if (dateDiff <= DATE_WINDOW) {
         const descSim = descriptionSimilarity(normBank, normLedger);
-        if (descSim >= NEAR_DESC_THRESHOLD) {
+        // When amount matches to the cent AND dates are within 1 day, the
+        // amount+date signal is strong enough to propose a near match even
+        // when wording diverges (e.g. "AMZN MKTP US*…" vs "Amazon - …").
+        // Outside that tight window, require description similarity.
+        const tightAmountAndDate = dateDiff <= 1;
+        if (descSim >= NEAR_DESC_THRESHOLD || tightAmountAndDate) {
           const confidence = computeNearConfidence(dateDiff, descSim);
           candidates.push({
             bankId: bank.id,

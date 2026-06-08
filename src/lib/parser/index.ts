@@ -73,12 +73,81 @@ export type CsvColumnMap = {
   reference?: string;
 };
 
-const DEFAULT_MAP: CsvColumnMap = {
-  date: "date",
-  description: "description",
-  amount: "amount",
-  reference: "reference",
+// Header synonyms recognised by detectColumnMap. All entries are already
+// lower-case because Papa's transformHeader lowercases incoming headers.
+const HEADER_SYNONYMS = {
+  date: ["date", "txn date", "transaction date", "post date", "posted date", "posting date"],
+  description: ["description", "memo", "details", "narration", "payee", "name"],
+  amount: ["amount", "signed amount", "txn amount", "transaction amount"],
+  debit: ["debit", "debits", "withdrawal", "withdrawals", "money out", "payment"],
+  credit: ["credit", "credits", "deposit", "deposits", "money in"],
+  reference: ["reference", "ref", "check #", "check number", "check", "chk"],
+} as const;
+
+/**
+ * Inspect the headers Papa parsed and pick the best column for each field.
+ * Falls back to the legacy `{date, description, amount, reference}` map when
+ * nothing matches, so existing tests / sample CSVs stay green.
+ *
+ * Prefers a signed `amount` column over debit/credit when both are present.
+ */
+export function detectColumnMap(headers: string[]): CsvColumnMap {
+  const present = new Set(headers);
+  const pick = (candidates: readonly string[]): string | undefined =>
+    candidates.find((c) => present.has(c));
+
+  const map: CsvColumnMap = {
+    date: pick(HEADER_SYNONYMS.date) ?? "date",
+    description: pick(HEADER_SYNONYMS.description) ?? "description",
+    reference: pick(HEADER_SYNONYMS.reference),
+  };
+
+  const amountCol = pick(HEADER_SYNONYMS.amount);
+  if (amountCol) {
+    map.amount = amountCol;
+  } else {
+    const debitCol = pick(HEADER_SYNONYMS.debit);
+    const creditCol = pick(HEADER_SYNONYMS.credit);
+    if (debitCol || creditCol) {
+      map.debit = debitCol;
+      map.credit = creditCol;
+    } else {
+      // Nothing found — keep legacy default so old fixtures still parse.
+      map.amount = "amount";
+    }
+  }
+
+  return map;
+}
+
+// Rows whose description matches this pattern are not real transactions
+// (statement-style header rows that carry no debit/credit).
+const NON_TXN_DESCRIPTION = /^(opening|beginning|closing|ending)\s+balance$/i;
+
+/**
+ * Cheap pre-parse to feed the column-mapping UI: returns the header row Papa
+ * detected plus the first few data rows, so the user can see how their CSV
+ * looks before committing to a column map.
+ */
+export type CsvInspection = {
+  headers: string[];
+  sampleRows: Record<string, string>[];
+  detected: CsvColumnMap;
 };
+
+export function inspectCsv(csvText: string, sampleSize = 3): CsvInspection {
+  const result = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+  const headers = result.meta.fields ?? [];
+  return {
+    headers,
+    sampleRows: result.data.slice(0, sampleSize),
+    detected: detectColumnMap(headers),
+  };
+}
 
 // ---- Public parser --------------------------------------------------
 
@@ -87,12 +156,15 @@ const DEFAULT_MAP: CsvColumnMap = {
  *
  * @param csvText  Raw CSV text (UTF-8).
  * @param source   "bank" | "ledger" — stamped on every Txn.
- * @param colMap   Column mapping; defaults to { date, description, amount, reference }.
+ * @param colMap   Optional explicit column mapping. When omitted, the parser
+ *                 auto-detects columns from the header row using known
+ *                 synonyms (handles `Txn Date`, `Memo`, split `Debit`/`Credit`,
+ *                 etc.) so real-world bank and ledger exports work out of the box.
  */
 export function parseCsv(
   csvText: string,
   source: "bank" | "ledger",
-  colMap: CsvColumnMap = DEFAULT_MAP
+  colMap?: CsvColumnMap
 ): Txn[] {
   const result = Papa.parse<Record<string, string>>(csvText, {
     header: true,
@@ -100,25 +172,29 @@ export function parseCsv(
     transformHeader: (h) => h.trim().toLowerCase(),
   });
 
+  const headers = result.meta.fields ?? [];
+  const effectiveMap = colMap ?? detectColumnMap(headers);
+
   return result.data
     .map((row, i): Txn | null => {
-      const dateRaw = row[colMap.date];
-      const descRaw = row[colMap.description];
+      const dateRaw = row[effectiveMap.date];
+      const descRaw = row[effectiveMap.description];
 
       if (!dateRaw || !descRaw) return null; // skip rows with missing essentials
+      if (NON_TXN_DESCRIPTION.test(descRaw.trim())) return null; // skip OPENING BALANCE etc.
 
       // Amount: prefer the single signed column; fall back to debit/credit split
       let amount = 0;
-      if (colMap.amount && row[colMap.amount] !== undefined) {
-        amount = toCents(row[colMap.amount]);
-      } else if (colMap.debit || colMap.credit) {
-        const debitVal = colMap.debit ? toCents(row[colMap.debit] ?? "0") : 0;
-        const creditVal = colMap.credit ? toCents(row[colMap.credit] ?? "0") : 0;
+      if (effectiveMap.amount && row[effectiveMap.amount] !== undefined) {
+        amount = toCents(row[effectiveMap.amount]);
+      } else if (effectiveMap.debit || effectiveMap.credit) {
+        const debitVal = effectiveMap.debit ? toCents(row[effectiveMap.debit] ?? "0") : 0;
+        const creditVal = effectiveMap.credit ? toCents(row[effectiveMap.credit] ?? "0") : 0;
         // debit column stores positive values for outflows → negate
         amount = creditVal - debitVal;
       }
 
-      const reference = colMap.reference ? row[colMap.reference] : undefined;
+      const reference = effectiveMap.reference ? row[effectiveMap.reference] : undefined;
 
       return {
         id: `${source}-${i}`,
