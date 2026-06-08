@@ -3,12 +3,13 @@
 import { useState } from "react";
 import {
   money,
-  sampleData,
   type Counts,
   type MissingTxn,
   type ReviewItem,
   type SimpleTxn,
 } from "@/lib/sample-data";
+import { type BalanceProof } from "@/lib/recon/types";
+import { formatBreakdownAmount } from "@/lib/recon/adapter";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -17,11 +18,15 @@ import { TxnRow } from "@/components/ui/txn-row";
 import { InsightCard } from "@/components/ui/insight-card";
 import { EmptyState } from "@/components/ui/empty-state";
 
+// ---- Breakdown (right side of status hero) --------------------------
+
 function Breakdown({
   reconciled,
+  balanceProof,
   unexplained,
 }: {
   reconciled: boolean;
+  balanceProof?: BalanceProof;
   unexplained: number;
 }) {
   const Row = ({
@@ -70,6 +75,18 @@ function Breakdown({
       </span>
     </div>
   );
+
+  // Derive display strings from balance proof if available, otherwise use
+  // static values kept for visual parity during any non-engine render.
+  const bankDisplay = balanceProof
+    ? formatBreakdownAmount(balanceProof.bankNetChange)
+    : "$8,412.66";
+  const booksDisplay = balanceProof
+    ? formatBreakdownAmount(balanceProof.ledgerNetChange)
+    : reconciled
+    ? "$8,412.66"
+    : "$8,447.66";
+
   return (
     <div
       style={{
@@ -80,9 +97,9 @@ function Breakdown({
         justifyContent: "center",
       }}
     >
-      <Row label="Your bank says" value="$8,412.66" />
+      <Row label="Your bank says" value={bankDisplay} />
       <div style={{ height: 1, background: "var(--line-2)" }} />
-      <Row label="Your books say" value={reconciled ? "$8,412.66" : "$8,447.66"} />
+      <Row label="Your books say" value={booksDisplay} />
       <div style={{ height: 1, background: "var(--line)" }} />
       <Row
         label={reconciled ? "Difference" : "Still unexplained"}
@@ -94,13 +111,17 @@ function Breakdown({
   );
 }
 
+// ---- Status hero ----------------------------------------------------
+
 function StatusHero({
   reconciled,
   unexplained,
+  balanceProof,
   onReview,
 }: {
   reconciled: boolean;
   unexplained: number;
+  balanceProof?: BalanceProof;
   onReview: () => void;
 }) {
   if (reconciled) {
@@ -118,7 +139,8 @@ function StatusHero({
         <div
           style={{
             padding: "26px 28px",
-            background: "linear-gradient(135deg, var(--good-soft), var(--surface) 80%)",
+            background:
+              "linear-gradient(135deg, var(--good-soft), var(--surface) 80%)",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
@@ -171,10 +193,11 @@ function StatusHero({
             </div>
           </div>
         </div>
-        <Breakdown reconciled unexplained={0} />
+        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} />
       </div>
     );
   }
+
   return (
     <div
       className="card"
@@ -189,7 +212,8 @@ function StatusHero({
       <div
         style={{
           padding: "26px 28px",
-          background: "linear-gradient(135deg, var(--warn-soft), var(--surface) 80%)",
+          background:
+            "linear-gradient(135deg, var(--warn-soft), var(--surface) 80%)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
@@ -236,10 +260,16 @@ function StatusHero({
           Let&apos;s clear it up
         </Button>
       </div>
-      <Breakdown reconciled={false} unexplained={unexplained} />
+      <Breakdown
+        reconciled={false}
+        unexplained={unexplained}
+        balanceProof={balanceProof}
+      />
     </div>
   );
 }
+
+// ---- TxnLists -------------------------------------------------------
 
 function ListNote({ text }: { text: string }) {
   return (
@@ -277,7 +307,9 @@ function TxnLists({
   matchedExtra: number;
   onOpenReview: () => void;
 }) {
-  const [tab, setTab] = useState<"matched" | "review" | "missingBooks" | "missingBank">("review");
+  const [tab, setTab] = useState<"matched" | "review" | "missingBooks" | "missingBank">(
+    "review"
+  );
   const TABS = [
     { key: "matched", label: "Matched", count: counts.matched },
     { key: "review", label: "Needs review", count: counts.review },
@@ -323,18 +355,20 @@ function TxnLists({
             {matched.map((tx, i) => (
               <TxnRow key={i} tx={tx} pill={<StatusPill kind="matched" />} />
             ))}
-            <div
-              style={{
-                padding: "14px 18px",
-                borderTop: "1px solid var(--line-2)",
-                fontSize: 13,
-                color: "var(--ink-3)",
-                textAlign: "center",
-                background: "var(--surface-2)",
-              }}
-            >
-              + {matchedExtra} more matched transactions
-            </div>
+            {matchedExtra > 0 && (
+              <div
+                style={{
+                  padding: "14px 18px",
+                  borderTop: "1px solid var(--line-2)",
+                  fontSize: 13,
+                  color: "var(--ink-3)",
+                  textAlign: "center",
+                  background: "var(--surface-2)",
+                }}
+              >
+                + {matchedExtra} more matched transactions
+              </div>
+            )}
           </div>
         ))}
 
@@ -384,29 +418,44 @@ function TxnLists({
       {tab === "missingBooks" && (
         <div>
           <ListNote text="These are on your bank statement, but not written in your books yet." />
-          {missingBooks.map((tx, i) => (
-            <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBooks" />} />
-          ))}
+          {missingBooks.length === 0 ? (
+            <EmptyState icon="checkCircle" title="Nothing here" body="Every bank transaction has a match in your books." />
+          ) : (
+            missingBooks.map((tx, i) => (
+              <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBooks" />} />
+            ))
+          )}
         </div>
       )}
 
       {tab === "missingBank" && (
         <div>
           <ListNote text="These are in your books, but your bank hasn't shown them yet — usually just a matter of time." />
-          {missingBank.map((tx, i) => (
-            <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBank" />} />
-          ))}
+          {missingBank.length === 0 ? (
+            <EmptyState icon="checkCircle" title="Nothing here" body="Everything in your books has cleared the bank." />
+          ) : (
+            missingBank.map((tx, i) => (
+              <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBank" />} />
+            ))
+          )}
         </div>
       )}
     </div>
   );
 }
 
-type DashboardScreenProps = {
+// ---- DashboardScreen ------------------------------------------------
+
+export type DashboardScreenProps = {
   counts: Counts;
   reconciled: boolean;
   unexplained: number;
+  balanceProof?: BalanceProof;
   reviewItems: ReviewItem[];
+  matched: SimpleTxn[];
+  matchedExtraCount: number;
+  missingFromBooks: MissingTxn[];
+  missingFromBank: MissingTxn[];
   onOpenReview: () => void;
 };
 
@@ -414,30 +463,45 @@ export function DashboardScreen({
   counts,
   reconciled,
   unexplained,
+  balanceProof,
   reviewItems,
+  matched,
+  matchedExtraCount,
+  missingFromBooks,
+  missingFromBank,
   onOpenReview,
 }: DashboardScreenProps) {
   const reviewLeft = counts.review;
 
+  // Dynamic insights derived from live counts/amounts
   const insights = reconciled
     ? [
         "Every transaction on your bank statement now has a match in your books.",
-        "The $35 monthly account fee has been added to your books.",
-        "Two checks you wrote have now cleared the bank.",
+        `${counts.matched} transaction${counts.matched === 1 ? "" : "s"} were matched automatically.`,
+        "Your books are fully up to date.",
       ]
     : [
-        `${counts.missingFromBank} ${
-          counts.missingFromBank === 1 ? "check hasn't" : "checks haven't"
-        } cleared your bank yet — that's normal, no action needed.`,
-        "One $35 bank fee is on your statement but not in your books. Adding it would close the gap.",
-        `${reviewLeft} ${
-          reviewLeft === 1 ? "pair looks" : "pairs look"
-        } like a match but need a quick yes or no from you.`,
+        missingFromBank.length > 0
+          ? `${missingFromBank.length} ${missingFromBank.length === 1 ? "item hasn't" : "items haven't"} cleared your bank yet — that's normal, no action needed.`
+          : "No outstanding items waiting to clear.",
+        missingFromBooks.length > 0
+          ? missingFromBooks.length === 1
+            ? `One item (${money(missingFromBooks[0].amount)}) is on your bank statement but not in your books yet. Adding it would help close the gap.`
+            : `${missingFromBooks.length} items are on your bank statement but not in your books yet.`
+          : "All bank transactions are recorded in your books.",
+        reviewLeft > 0
+          ? `${reviewLeft} ${reviewLeft === 1 ? "pair looks" : "pairs look"} like a match but need a quick yes or no from you.`
+          : "All pairs have been reviewed.",
       ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <StatusHero reconciled={reconciled} unexplained={unexplained} onReview={onOpenReview} />
+      <StatusHero
+        reconciled={reconciled}
+        unexplained={unexplained}
+        balanceProof={balanceProof}
+        onReview={onOpenReview}
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <KpiCard
@@ -467,17 +531,15 @@ export function DashboardScreen({
         />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 18 }}>
-        <InsightCard insights={insights} />
-      </div>
+      <InsightCard insights={insights} />
 
       <TxnLists
         counts={counts}
-        missingBooks={sampleData.missingFromBooks}
-        missingBank={sampleData.missingFromBank}
+        missingBooks={missingFromBooks}
+        missingBank={missingFromBank}
         reviewItems={reviewItems}
-        matched={sampleData.matched}
-        matchedExtra={sampleData.matchedExtraCount}
+        matched={matched}
+        matchedExtra={matchedExtraCount}
         onOpenReview={onOpenReview}
       />
     </div>

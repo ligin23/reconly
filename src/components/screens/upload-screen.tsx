@@ -17,7 +17,8 @@ function UploadCard({
 }: {
   side: UploadSide;
   file: FileMeta | null;
-  onPick: () => void;
+  /** Called with the selected File when the user picks or drops a CSV. */
+  onPick: (file: File) => void;
   onRemove: () => void;
 }) {
   const [drag, setDrag] = useState(false);
@@ -115,7 +116,7 @@ function UploadCard({
               {file.name}
             </div>
             <div className="mono" style={{ fontSize: 11.5, color: "var(--good-ink)" }}>
-              {file.size} · {file.rows} rows · ready
+              {file.size}{file.rows > 0 ? ` · ${file.rows} rows` : ""} · ready
             </div>
           </div>
           <button
@@ -189,7 +190,8 @@ function UploadCard({
         onDrop={(e) => {
           e.preventDefault();
           setDrag(false);
-          onPick();
+          const file = e.dataTransfer.files?.[0];
+          if (file) onPick(file);
         }}
         style={{
           display: "flex",
@@ -234,7 +236,12 @@ function UploadCard({
         type="file"
         accept=".csv"
         style={{ display: "none" }}
-        onChange={() => onPick()}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onPick(file);
+          // Reset so the same file can be re-selected
+          e.target.value = "";
+        }}
       />
     </div>
   );
@@ -242,8 +249,10 @@ function UploadCard({
 
 type UploadScreenProps = {
   files: UploadFiles;
-  onPick: (side: UploadSide) => void;
+  /** Called with the actual File object when the user selects or drops a CSV. */
+  onPick: (side: UploadSide, file: File) => void;
   onRemove: (side: UploadSide) => void;
+  /** Load the built-in sample CSV pair. */
   onSample: () => void;
   onStart: () => void;
 };
@@ -286,13 +295,13 @@ export function UploadScreen({ files, onPick, onRemove, onSample, onStart }: Upl
         <UploadCard
           side="bank"
           file={files.bank}
-          onPick={() => onPick("bank")}
+          onPick={(file) => onPick("bank", file)}
           onRemove={() => onRemove("bank")}
         />
         <UploadCard
           side="ledger"
           file={files.ledger}
-          onPick={() => onPick("ledger")}
+          onPick={(file) => onPick("ledger", file)}
           onRemove={() => onRemove("ledger")}
         />
       </div>

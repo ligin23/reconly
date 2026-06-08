@@ -1,17 +1,42 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { sampleData, type FileMeta } from "@/lib/sample-data";
+import { parseCsv } from "@/lib/parser";
+import { reconcile } from "@/lib/recon";
+import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
+import type { Match, Txn, BalanceProof, MatchStatus } from "@/lib/recon/types";
 import { Icon } from "@/components/ui/icon";
 import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
-import { UploadScreen, type UploadFiles, type UploadSide } from "@/components/screens/upload-screen";
+import {
+  UploadScreen,
+  type UploadFiles,
+  type UploadSide,
+} from "@/components/screens/upload-screen";
 import { ProcessingScreen } from "@/components/screens/processing-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
-import { ReviewScreen } from "@/components/screens/review-screen";
+import { ReviewScreen, type ReviewDecision } from "@/components/screens/review-screen";
 
 type Screen = "upload" | "processing" | "dashboard" | "review";
 
+// ---- Engine output held after a successful run -----------------------
+type EngineOutput = {
+  bankTxns: Txn[];
+  ledgerTxns: Txn[];
+  baseMissingFromBooks: Txn[];
+  baseMissingFromBank: Txn[];
+  balanceProof: BalanceProof;
+};
+
+// ---- File size formatter -------------------------------------------
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---- Sidebar ---------------------------------------------------------
 function Sidebar({
   screen,
   analyzed,
@@ -56,10 +81,7 @@ function Sidebar({
         <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>
           {sampleData.account.name}
         </div>
-        <div
-          className="mono"
-          style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 3 }}
-        >
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 3 }}>
           {sampleData.account.bank} ·••{sampleData.account.last4}
         </div>
         <div
@@ -159,6 +181,7 @@ function Sidebar({
   );
 }
 
+// ---- TopBar ----------------------------------------------------------
 function TopBar({
   screen,
   onStartOver,
@@ -230,50 +253,143 @@ function TopBar({
   );
 }
 
+// ---- AppShell --------------------------------------------------------
 export function AppShell() {
   const [screen, setScreen] = useState<Screen>("upload");
   const [analyzed, setAnalyzed] = useState(false);
   const [files, setFiles] = useState<UploadFiles>({ bank: null, ledger: null });
-  const [reviewQueue, setReviewQueue] = useState(sampleData.review);
 
-  // Reconciled is derived from the engine output. In Phase 1 the engine isn't
-  // wired yet, so we use the sample data's `unexplained` total. When the
-  // remaining review queue is empty AND nothing is left unexplained, we're
-  // reconciled. (Phase 2 makes this fully driven by the engine.)
-  const unexplained = sampleData.unexplained;
-  const reconciled = reviewQueue.length === 0 && unexplained === 0;
+  // CSV text contents — held in a ref (not state) so onProcessed reads the
+  // current value without stale-closure issues from the ProcessingScreen.
+  const fileContentsRef = useRef<{ bank: string | null; ledger: string | null }>({
+    bank: null,
+    ledger: null,
+  });
 
-  const counts = {
-    matched: sampleData.counts.matched,
-    review: reviewQueue.length,
-    missingFromBooks: sampleData.counts.missingFromBooks,
-    missingFromBank: sampleData.counts.missingFromBank,
+  // ---- Engine output (immutable once set per run) -------------------
+  const [engineOutput, setEngineOutput] = useState<EngineOutput | null>(null);
+
+  // ---- Mutable match statuses (Accept / Reject / Manual) -----------
+  const [matches, setMatches] = useState<Match[]>([]);
+
+  // ---- Derived dashboard data (recomputed whenever matches change) --
+  const dashboardData = useMemo(() => {
+    if (!engineOutput) return null;
+    return buildDashboardData(
+      matches,
+      engineOutput.bankTxns,
+      engineOutput.ledgerTxns,
+      engineOutput.baseMissingFromBooks,
+      engineOutput.baseMissingFromBank
+    );
+  }, [matches, engineOutput]);
+
+  const reconciled = engineOutput
+    ? engineOutput.balanceProof.unexplainedDifference === 0
+    : false;
+
+  const unexplained = engineOutput
+    ? unexplainedCents(engineOutput.balanceProof)
+    : sampleData.unexplained;
+
+  // ---- Upload handlers ------------------------------------------------
+  const pickFile = (side: UploadSide, file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = (e.target?.result as string) ?? "";
+      fileContentsRef.current = { ...fileContentsRef.current, [side]: content };
+      const meta: FileMeta = {
+        name: file.name,
+        size: formatFileSize(file.size),
+        rows: 0, // updated after parse in onProcessed
+      };
+      setFiles((f) => ({ ...f, [side]: meta }));
+    };
+    reader.readAsText(file);
   };
 
-  const pickFile = (side: UploadSide) => {
-    const meta: FileMeta = side === "bank" ? sampleData.files.bank : sampleData.files.ledger;
-    setFiles((f) => ({ ...f, [side]: meta }));
-  };
-  const removeFile = (side: UploadSide) =>
+  const removeFile = (side: UploadSide) => {
+    fileContentsRef.current = { ...fileContentsRef.current, [side]: null };
     setFiles((f) => ({ ...f, [side]: null }));
-  const useSample = () =>
-    setFiles({ bank: sampleData.files.bank, ledger: sampleData.files.ledger });
+  };
+
+  const useSample = () => {
+    Promise.all([
+      fetch("/samples/bank-march2026.csv").then((r) => r.text()),
+      fetch("/samples/ledger-march2026.csv").then((r) => r.text()),
+    ])
+      .then(([bankContent, ledgerContent]) => {
+        fileContentsRef.current = { bank: bankContent, ledger: ledgerContent };
+        setFiles({ bank: sampleData.files.bank, ledger: sampleData.files.ledger });
+      })
+      .catch(console.error);
+  };
+
   const startAnalysis = () => setScreen("processing");
-  const onProcessed = () => {
+
+  // useCallback with empty deps — reads from ref, not state, so no stale closure.
+  const onProcessed = useCallback(() => {
+    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
+    if (!bankContent || !ledgerContent) {
+      // Shouldn't happen; defensive fallback.
+      setAnalyzed(true);
+      setScreen("dashboard");
+      return;
+    }
+
+    const bankTxns = parseCsv(bankContent, "bank");
+    const ledgerTxns = parseCsv(ledgerContent, "ledger");
+    const result = reconcile(bankTxns, ledgerTxns);
+
+    // Update the file metadata with real row counts.
+    setFiles((f) => ({
+      bank: f.bank ? { ...f.bank, rows: bankTxns.length } : null,
+      ledger: f.ledger ? { ...f.ledger, rows: ledgerTxns.length } : null,
+    }));
+
+    setEngineOutput({
+      bankTxns,
+      ledgerTxns,
+      baseMissingFromBooks: result.missingFromBooks,
+      baseMissingFromBank: result.missingFromBank,
+      balanceProof: result.balanceProof,
+    });
+    setMatches(result.matches);
     setAnalyzed(true);
     setScreen("dashboard");
-  };
+  }, []); // stable reference — reads ref, not state
+
   const startOver = () => {
+    fileContentsRef.current = { bank: null, ledger: null };
     setFiles({ bank: null, ledger: null });
+    setEngineOutput(null);
+    setMatches([]);
     setAnalyzed(false);
-    setReviewQueue(sampleData.review);
     setScreen("upload");
   };
 
-  const decide = () => setReviewQueue((q) => q.slice(1));
+  // ---- Review decision handler -------------------------------------
+  // The review screen always operates on reviewItems[0]. We update the
+  // corresponding match's status, which re-derives reviewItems via useMemo.
+  const decide = (decision: ReviewDecision) => {
+    const currentReviewItems = dashboardData?.reviewItems ?? [];
+    const currentItemId = currentReviewItems[0]?.id;
+    if (!currentItemId) return;
+
+    const newStatus: MatchStatus =
+      decision === "accept"
+        ? "accepted"
+        : decision === "reject"
+        ? "rejected"
+        : "manual"; // "manual" treated as accepted for now
+
+    setMatches((ms) =>
+      ms.map((m) => (m.id === currentItemId ? { ...m, status: newStatus } : m))
+    );
+  };
 
   // COPILOT_MOUNT — a chat panel attaching to the in-memory recon result
-  // would mount here in a future phase.
+  // (matches, engineOutput) would be mounted here in a future phase.
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
@@ -310,22 +426,30 @@ export function AppShell() {
                 onStart={startAnalysis}
               />
             )}
+
             {screen === "processing" && (
               <ProcessingScreen onComplete={onProcessed} />
             )}
-            {screen === "dashboard" && (
+
+            {screen === "dashboard" && dashboardData && (
               <DashboardScreen
-                counts={counts}
+                counts={dashboardData.counts}
                 reconciled={reconciled}
                 unexplained={unexplained}
-                reviewItems={reviewQueue}
+                balanceProof={engineOutput?.balanceProof}
+                reviewItems={dashboardData.reviewItems}
+                matched={dashboardData.matched}
+                matchedExtraCount={dashboardData.matchedExtraCount}
+                missingFromBooks={dashboardData.missingFromBooks}
+                missingFromBank={dashboardData.missingFromBank}
                 onOpenReview={() => setScreen("review")}
               />
             )}
-            {screen === "review" && (
+
+            {screen === "review" && dashboardData && (
               <ReviewScreen
-                queue={reviewQueue}
-                total={sampleData.review.length}
+                queue={dashboardData.reviewItems}
+                total={matches.filter((m) => m.type === "near").length}
                 onDecide={decide}
                 onBack={() => setScreen("dashboard")}
               />
