@@ -22,6 +22,8 @@ import { HistoryScreen } from "@/components/screens/history-screen";
 import { repository } from "@/lib/data/indexeddb-repository";
 import type { ReconciliationRecord } from "@/lib/data/repository";
 import { generateId, inferPeriod, formatPeriod, deriveStatus } from "@/lib/data/utils";
+import { downloadPdfReport } from "@/lib/export/pdf-report";
+import { downloadExcelWorksheet } from "@/lib/export/excel-worksheet";
 
 type Screen = "upload" | "mapping" | "processing" | "dashboard" | "review" | "history";
 
@@ -421,6 +423,169 @@ function Sidebar({
   );
 }
 
+// ---- ExportMenu (dropdown) ------------------------------------------
+// Self-contained: manages its own open/generating state.
+// Receives async callbacks — shows "Generating…" while they run.
+function ExportMenu({
+  onPdf,
+  onExcel,
+}: {
+  onPdf: () => Promise<void>;
+  onExcel: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [generating, setGenerating] = useState<"idle" | "pdf" | "excel">("idle");
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const run = async (kind: "pdf" | "excel") => {
+    setOpen(false);
+    setGenerating(kind);
+    try {
+      await (kind === "pdf" ? onPdf() : onExcel());
+    } finally {
+      setGenerating("idle");
+    }
+  };
+
+  const busy = generating !== "idle";
+  const label = generating === "pdf"
+    ? "Generating PDF…"
+    : generating === "excel"
+    ? "Generating…"
+    : "Export";
+
+  return (
+    <div ref={menuRef} style={{ position: "relative" }}>
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={busy ? undefined : "download"}
+        iconRight={busy ? undefined : "chevR"}
+        onClick={() => !busy && setOpen((o) => !o)}
+        disabled={busy}
+        style={{ opacity: busy ? 0.65 : 1 }}
+      >
+        {label}
+      </Button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            minWidth: 210,
+            background: "var(--surface)",
+            border: "1px solid var(--line)",
+            borderRadius: "var(--r-md)",
+            boxShadow: "var(--sh-lg)",
+            zIndex: 40,
+            overflow: "hidden",
+          }}
+        >
+          {/* Menu header */}
+          <div
+            style={{
+              padding: "9px 14px 7px",
+              fontSize: 10.5,
+              fontWeight: 600,
+              color: "var(--ink-3)",
+              letterSpacing: "0.05em",
+              textTransform: "uppercase",
+              borderBottom: "1px solid var(--line-2)",
+            }}
+          >
+            Download
+          </div>
+
+          {/* PDF item */}
+          <button
+            type="button"
+            onClick={() => run("pdf")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              width: "100%",
+              padding: "11px 14px",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              textAlign: "left",
+              color: "var(--ink)",
+            }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.background = "var(--surface-2)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = "none")
+            }
+          >
+            <Icon name="download" size={15} style={{ color: "var(--ink-3)", flex: "none" }} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>
+                Report (PDF)
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1 }}>
+                Keep or share — summary &amp; full detail
+              </div>
+            </div>
+          </button>
+
+          {/* Divider */}
+          <div style={{ height: 1, background: "var(--line-2)", margin: "0 10px" }} />
+
+          {/* Excel item */}
+          <button
+            type="button"
+            onClick={() => run("excel")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              width: "100%",
+              padding: "11px 14px",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              textAlign: "left",
+              color: "var(--ink)",
+            }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.background = "var(--surface-2)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = "none")
+            }
+          >
+            <Icon name="download" size={15} style={{ color: "var(--ink-3)", flex: "none" }} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>
+                Worksheet (Excel)
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1 }}>
+                Act on it — all transactions laid out
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- TopBar ----------------------------------------------------------
 function TopBar({
   screen,
@@ -430,6 +595,8 @@ function TopBar({
   hasSavedRecord,
   onStartOver,
   onSave,
+  onExportPdf,
+  onExportExcel,
 }: {
   screen: Screen;
   title: string;
@@ -438,8 +605,10 @@ function TopBar({
   hasSavedRecord: boolean;
   onStartOver: () => void;
   onSave: () => void;
+  onExportPdf: () => Promise<void>;
+  onExportExcel: () => Promise<void>;
 }) {
-  const showSave =
+  const showActions =
     analyzed &&
     screen !== "upload" &&
     screen !== "processing" &&
@@ -488,15 +657,18 @@ function TopBar({
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {showSave && (
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="save"
-            onClick={onSave}
-          >
-            {hasSavedRecord ? "Save changes" : "Save reconciliation"}
-          </Button>
+        {showActions && (
+          <>
+            <ExportMenu onPdf={onExportPdf} onExcel={onExportExcel} />
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="save"
+              onClick={onSave}
+            >
+              {hasSavedRecord ? "Save changes" : "Save reconciliation"}
+            </Button>
+          </>
         )}
         {screen !== "upload" && screen !== "processing" && (
           <Button variant="ghost" size="sm" onClick={onStartOver}>
@@ -794,6 +966,39 @@ export function AppShell() {
     }
   };
 
+  /** Build the shared export context from current in-memory state. */
+  const buildExportContext = () => {
+    if (!engineOutput) return null;
+    const allTxns = [...engineOutput.bankTxns, ...engineOutput.ledgerTxns];
+    const period = inferPeriod(allTxns);
+    return {
+      accountName: currentRecord?.accountName ?? sampleData.account.name,
+      periodStart: currentRecord?.periodStart ?? period?.start ?? "",
+      periodEnd:   currentRecord?.periodEnd   ?? period?.end   ?? "",
+      openingBalance: currentRecord?.openingBalance ?? null,
+      closingBalance: currentRecord?.closingBalance ?? null,
+      reconciled,
+      unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
+      bankTxns:  engineOutput.bankTxns,
+      ledgerTxns: engineOutput.ledgerTxns,
+      matches,
+    };
+  };
+
+  /** Trigger PDF download from current in-memory state. Returns a promise for ExportMenu. */
+  const handleExportPdf = (): Promise<void> => {
+    const ctx = buildExportContext();
+    if (!ctx) return Promise.resolve();
+    return downloadPdfReport(ctx);
+  };
+
+  /** Trigger Excel download from current in-memory state. Returns a promise for ExportMenu. */
+  const handleExportExcel = (): Promise<void> => {
+    const ctx = buildExportContext();
+    if (!ctx) return Promise.resolve();
+    return downloadExcelWorksheet(ctx);
+  };
+
   // ---- Sidebar navigation ------------------------------------------
   // Clicking the "Upload files" step once a reconciliation is already loaded
   // means "start a new one" — give a clean slate instead of dropping the user
@@ -833,6 +1038,8 @@ export function AppShell() {
             hasSavedRecord={Boolean(currentRecordId)}
             onStartOver={startOver}
             onSave={handleSaveClick}
+            onExportPdf={handleExportPdf}
+            onExportExcel={handleExportExcel}
           />
         )}
 

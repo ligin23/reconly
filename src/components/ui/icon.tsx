@@ -21,7 +21,8 @@ export type IconName =
   | "alert"
   | "minus"
   | "history"
-  | "save";
+  | "save"
+  | "download";
 
 type IconProps = {
   name: IconName;
@@ -88,6 +89,8 @@ export function Icon({ name, size = 18, stroke = 1.8, style, className }: IconPr
       return <svg {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></svg>;
     case "save":
       return <svg {...p}><path d="M15 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M15 3v5H9V3M9 17h6" /></svg>;
+    case "download":
+      return <svg {...p}><path d="M12 16V4M7 16l5 5 5-5" /><path d="M4 19v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" /></svg>;
     default:
       return null;
   }
