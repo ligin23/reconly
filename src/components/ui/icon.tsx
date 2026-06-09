@@ -19,7 +19,9 @@ export type IconName =
   | "dot"
   | "link"
   | "alert"
-  | "minus";
+  | "minus"
+  | "history"
+  | "save";
 
 type IconProps = {
   name: IconName;
@@ -82,6 +84,10 @@ export function Icon({ name, size = 18, stroke = 1.8, style, className }: IconPr
       return <svg {...p}><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>;
     case "minus":
       return <svg {...p}><path d="M5 12h14" /></svg>;
+    case "history":
+      return <svg {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></svg>;
+    case "save":
+      return <svg {...p}><path d="M15 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M15 3v5H9V3M9 17h6" /></svg>;
     default:
       return null;
   }
