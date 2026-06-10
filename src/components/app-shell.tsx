@@ -1,11 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { sampleData, type FileMeta } from "@/lib/sample-data";
+import { sampleData, type FileMeta, type MissingTxn, type UserAddedEntry } from "@/lib/sample-data";
 import { parseCsv, inspectCsv, type CsvColumnMap, type CsvInspection } from "@/lib/parser";
 import { reconcile } from "@/lib/recon";
 import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
-import type { Match, Txn, BalanceProof, MatchStatus } from "@/lib/recon/types";
+import type {
+  Match,
+  Txn,
+  BalanceProof,
+  MatchStatus,
+  AnyCompositeMatch,
+  ReconResult,
+} from "@/lib/recon/types";
 import { Icon } from "@/components/ui/icon";
 import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
@@ -15,9 +22,9 @@ import {
   type UploadSide,
 } from "@/components/screens/upload-screen";
 import { MappingScreen } from "@/components/screens/mapping-screen";
-import { ProcessingScreen } from "@/components/screens/processing-screen";
+import { ProcessingScreen, type ReconCounts } from "@/components/screens/processing-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
-import { ReviewScreen, type ReviewDecision } from "@/components/screens/review-screen";
+import { ReviewScreen, type ReviewDecision, type ReviewMeta } from "@/components/screens/review-screen";
 import { HistoryScreen } from "@/components/screens/history-screen";
 import { repository } from "@/lib/data/indexeddb-repository";
 import type { ReconciliationRecord } from "@/lib/data/repository";
@@ -141,6 +148,7 @@ function SaveDialog({
             placeholder="e.g. Business Checking"
             style={INPUT_STYLE}
             autoFocus
+            data-testid="save-account-name"
           />
         </label>
 
@@ -238,11 +246,18 @@ function Sidebar({
   analyzed,
   go,
   historyCount,
+  accountName,
+  periodLabel,
+  showSampleBanner,
 }: {
   screen: Screen;
   analyzed: boolean;
   go: (s: Screen) => void;
   historyCount: number;
+  /** Saved record's account name; null while the session is unsaved. */
+  accountName: string | null;
+  periodLabel: string;
+  showSampleBanner: boolean;
 }) {
   const steps: { key: Screen; n: number; label: string; screens: Screen[] }[] = [
     { key: "upload", n: 1, label: "Upload files", screens: ["upload", "mapping"] },
@@ -282,24 +297,28 @@ function Sidebar({
         }}
       >
         <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>
-          {sampleData.account.name}
+          {accountName ?? "New reconciliation"}
         </div>
-        <div className="mono" style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 3 }}>
-          {sampleData.account.bank} ·••{sampleData.account.last4}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            marginTop: 9,
-            fontSize: 12,
-            color: "var(--ink-2)",
-          }}
-        >
-          <Icon name="dot" size={7} style={{ color: "var(--accent)" }} />
-          {sampleData.account.period}
-        </div>
+        {!accountName && (
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 3 }}>
+            Not saved yet
+          </div>
+        )}
+        {periodLabel && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 9,
+              fontSize: 12,
+              color: "var(--ink-2)",
+            }}
+          >
+            <Icon name="dot" size={7} style={{ color: "var(--accent)" }} />
+            {periodLabel}
+          </div>
+        )}
       </div>
 
       <div className="eyebrow" style={{ padding: "0 8px 10px" }}>
@@ -341,6 +360,7 @@ function Sidebar({
         type="button"
         className="navitem"
         data-active={screen === "history" ? "" : undefined}
+        data-testid="nav-history"
         onClick={() => go("history")}
       >
         <span
@@ -387,6 +407,7 @@ function Sidebar({
         </span>
         <span>How matching works</span>
       </button>
+      {showSampleBanner && (
       <div
         style={{
           padding: "11px 12px",
@@ -419,6 +440,7 @@ function Sidebar({
           You&apos;re exploring with example data. Nothing here is real.
         </div>
       </div>
+      )}
     </aside>
   );
 }
@@ -476,6 +498,7 @@ function ExportMenu({
         onClick={() => !busy && setOpen((o) => !o)}
         disabled={busy}
         style={{ opacity: busy ? 0.65 : 1 }}
+        data-testid="export-menu-btn"
       >
         {label}
       </Button>
@@ -513,6 +536,7 @@ function ExportMenu({
           {/* PDF item */}
           <button
             type="button"
+            data-testid="export-pdf-btn"
             onClick={() => run("pdf")}
             style={{
               display: "flex",
@@ -550,6 +574,7 @@ function ExportMenu({
           {/* Excel item */}
           <button
             type="button"
+            data-testid="export-excel-btn"
             onClick={() => run("excel")}
             style={{
               display: "flex",
@@ -593,6 +618,7 @@ function TopBar({
   subtitle,
   analyzed,
   hasSavedRecord,
+  saveStatus,
   onStartOver,
   onSave,
   onExportPdf,
@@ -603,6 +629,7 @@ function TopBar({
   subtitle: string;
   analyzed: boolean;
   hasSavedRecord: boolean;
+  saveStatus: "idle" | "saving" | "saved" | "error";
   onStartOver: () => void;
   onSave: () => void;
   onExportPdf: () => Promise<void>;
@@ -663,10 +690,20 @@ function TopBar({
             <Button
               variant="secondary"
               size="sm"
-              icon="save"
+              icon={saveStatus === "saved" ? "check" : "save"}
               onClick={onSave}
+              disabled={saveStatus === "saving"}
+              data-testid="save-btn"
             >
-              {hasSavedRecord ? "Save changes" : "Save reconciliation"}
+              {saveStatus === "saving"
+                ? "Saving…"
+                : saveStatus === "saved"
+                ? "Saved"
+                : saveStatus === "error"
+                ? "Couldn't save — try again"
+                : hasSavedRecord
+                ? "Save changes"
+                : "Save reconciliation"}
             </Button>
           </>
         )}
@@ -698,13 +735,45 @@ export function AppShell() {
     ledger: CsvInspection;
   } | null>(null);
   const confirmedMapsRef = useRef<{ bank: CsvColumnMap; ledger: CsvColumnMap } | null>(null);
+  const reconCacheRef = useRef<{ bankTxns: Txn[]; ledgerTxns: Txn[]; result: ReconResult } | null>(null);
+  const [reconCounts, setReconCounts] = useState<ReconCounts | null>(null);
 
   const [matches, setMatches] = useState<Match[]>([]);
+  const [compositeMatches, setCompositeMatches] = useState<AnyCompositeMatch[]>([]);
+  const [userAddedEntries, setUserAddedEntries] = useState<UserAddedEntry[]>([]);
+  const [acknowledgedBankIds, setAcknowledgedBankIds] = useState<string[]>([]);
+
+  // True only while the built-in sample CSVs are loaded — gates the
+  // "Sample workspace" disclaimer so it never shows over real uploads.
+  const [usingSampleData, setUsingSampleData] = useState(false);
+
+  // Current-month label ("June 2026") for fresh sessions with no data yet.
+  // Set in an effect so the statically prerendered HTML (built at a possibly
+  // different time) never mismatches on hydration.
+  const [todayLabel, setTodayLabel] = useState("");
+  useEffect(() => {
+    setTodayLabel(
+      new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })
+    );
+  }, []);
 
   // ---- Persistence state --------------------------------------------
   const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
   const [savedRecords, setSavedRecords] = useState<ReconciliationRecord[]>([]);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+
+  // Save-button feedback: the IndexedDB write is async, so surface its state
+  // instead of failing silently — "saving" while in flight, a brief "saved"
+  // flash on success, "error" (with retry via the same button) on failure.
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashSaved = () => {
+    setSaveStatus("saved");
+    if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+    saveStatusTimerRef.current = setTimeout(() => setSaveStatus("idle"), 2000);
+  };
 
   // Load history on mount (IndexedDB is browser-only; safe inside useEffect).
   useEffect(() => {
@@ -719,29 +788,73 @@ export function AppShell() {
     if (!engineOutput) return null;
     return buildDashboardData(
       matches,
+      compositeMatches,
       engineOutput.bankTxns,
       engineOutput.ledgerTxns,
       engineOutput.baseMissingFromBooks,
-      engineOutput.baseMissingFromBank
+      engineOutput.baseMissingFromBank,
+      new Set(userAddedEntries.map((e) => e.txnId)),
+      new Set(acknowledgedBankIds)
     );
-  }, [matches, engineOutput]);
+  }, [matches, compositeMatches, userAddedEntries, acknowledgedBankIds, engineOutput]);
 
-  const reconciled = engineOutput
-    ? engineOutput.balanceProof.unexplainedDifference === 0
+  // Live balance proof: clearedSum updates as users accept/reject matches.
+  // unexplainedDifference is immutable (bank total − ledger total), but
+  // clearedSum tracks what's been confirmed so far.
+  const liveBalanceProof = useMemo((): BalanceProof | null => {
+    if (!engineOutput) return null;
+    const oneToOneCleared = matches
+      .filter((m) => m.status === "accepted" || m.status === "manual")
+      .reduce((s, m) => {
+        const t = engineOutput.bankTxns.find((b) => b.id === m.bankTxnId);
+        return s + (t?.amount ?? 0);
+      }, 0);
+    const compositeCleared = compositeMatches
+      .filter((c) => c.status === "accepted")
+      .reduce((s, c) => {
+        const t = engineOutput.bankTxns.find((b) => b.id === c.bankTxnId);
+        return s + (t?.amount ?? 0);
+      }, 0);
+    // Each user-added entry explains part of the gap. Use absolute amounts so
+    // adding any missing item (inflow or outflow) always shrinks the stated gap.
+    const addedAbsSum = userAddedEntries.reduce((s, e) => s + Math.abs(e.amount), 0);
+    const engineGap = engineOutput.balanceProof.unexplainedDifference;
+    const gapSign = engineGap < 0 ? -1 : 1;
+    const newUnexplained = gapSign * Math.max(0, Math.abs(engineGap) - addedAbsSum);
+    return {
+      ...engineOutput.balanceProof,
+      clearedSum: oneToOneCleared + compositeCleared,
+      unexplainedDifference: newUnexplained,
+    };
+  }, [matches, compositeMatches, userAddedEntries, engineOutput]);
+
+  const reconciled = liveBalanceProof
+    ? Math.abs(liveBalanceProof.unexplainedDifference) < 1
     : false;
 
-  const unexplained = engineOutput
-    ? unexplainedCents(engineOutput.balanceProof)
+  const unexplained = liveBalanceProof
+    ? unexplainedCents(liveBalanceProof)
     : sampleData.unexplained;
 
   // Current record (if this session has a saved record)
   const currentRecord = savedRecords.find((r) => r.id === currentRecordId) ?? null;
 
-  // Labels for TopBar
-  const accountLabel = currentRecord?.accountName ?? sampleData.account.name;
+  // Labels for TopBar/Sidebar — never fabricated. Priority: the saved
+  // record's own values > a period inferred from the actual transactions >
+  // the current month (fresh session, nothing uploaded yet).
+  const inferredPeriodLabel = useMemo(() => {
+    if (!engineOutput) return null;
+    const period = inferPeriod([
+      ...engineOutput.bankTxns,
+      ...engineOutput.ledgerTxns,
+    ]);
+    return period ? formatPeriod(period.start, period.end) : null;
+  }, [engineOutput]);
+
+  const accountLabel = currentRecord?.accountName ?? "Not saved yet";
   const periodLabel = currentRecord
     ? formatPeriod(currentRecord.periodStart, currentRecord.periodEnd)
-    : sampleData.account.periodRange;
+    : inferredPeriodLabel ?? todayLabel;
 
   const topBarTitle = ((): string => {
     switch (screen) {
@@ -756,7 +869,7 @@ export function AppShell() {
 
   const topBarSubtitle = ((): string => {
     switch (screen) {
-      case "upload":     return sampleData.account.periodRange;
+      case "upload":     return todayLabel;
       case "mapping":    return "Tell us what each column means";
       case "processing": return periodLabel;
       case "dashboard":  return `${accountLabel} · ${periodLabel}`;
@@ -768,17 +881,18 @@ export function AppShell() {
   // Pre-fill values for the save dialog (inferred from current engine output)
   const saveDialogInitialValues: SaveFormValues = useMemo(() => {
     if (!engineOutput) {
-      return { accountName: sampleData.account.name, periodStart: "", periodEnd: "", openingBalance: "0.00" };
+      return { accountName: "", periodStart: "", periodEnd: "", openingBalance: "0.00" };
     }
     const allTxns = [...engineOutput.bankTxns, ...engineOutput.ledgerTxns];
     const period = inferPeriod(allTxns);
     return {
-      accountName: sampleData.account.name,
+      // No fake prefill — the user names their own account
+      accountName: currentRecord?.accountName ?? "",
       periodStart: period?.start ?? "",
       periodEnd: period?.end ?? "",
       openingBalance: "0.00",
     };
-  }, [engineOutput]);
+  }, [engineOutput, currentRecord]);
 
   // ---- Upload handlers ------------------------------------------------
   const pickFile = (side: UploadSide, file: File) => {
@@ -788,6 +902,7 @@ export function AppShell() {
       fileContentsRef.current = { ...fileContentsRef.current, [side]: content };
       const meta: FileMeta = { name: file.name, size: formatFileSize(file.size), rows: 0 };
       setFiles((f) => ({ ...f, [side]: meta }));
+      setUsingSampleData(false); // a real file replaces the sample pair
     };
     reader.readAsText(file);
   };
@@ -805,6 +920,7 @@ export function AppShell() {
       .then(([bankContent, ledgerContent]) => {
         fileContentsRef.current = { bank: bankContent, ledger: ledgerContent };
         setFiles({ bank: sampleData.files.bank, ledger: sampleData.files.ledger });
+        setUsingSampleData(true);
       })
       .catch(console.error);
   };
@@ -818,20 +934,32 @@ export function AppShell() {
 
   const confirmMapping = (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => {
     confirmedMapsRef.current = maps;
+    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
+    if (bankContent && ledgerContent) {
+      const bankTxns = parseCsv(bankContent, "bank", maps.bank);
+      const ledgerTxns = parseCsv(ledgerContent, "ledger", maps.ledger);
+      const result = reconcile(bankTxns, ledgerTxns);
+      reconCacheRef.current = { bankTxns, ledgerTxns, result };
+      const autoMatched = result.matches.filter((m) => m.status === "accepted").length;
+      const differences =
+        result.missingFromBooks.length +
+        result.missingFromBank.length +
+        result.matches.filter((m) => m.status === "suggested").length +
+        result.compositeMatches.length;
+      setReconCounts({ totalTxns: bankTxns.length + ledgerTxns.length, autoMatched, differences });
+    }
     setScreen("processing");
   };
 
   const onProcessed = useCallback(() => {
-    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
-    if (!bankContent || !ledgerContent) {
+    const cached = reconCacheRef.current;
+    if (!cached) {
+      // Sample data path: no uploaded files, jump straight to dashboard.
       setAnalyzed(true);
       setScreen("dashboard");
       return;
     }
-    const maps = confirmedMapsRef.current;
-    const bankTxns = parseCsv(bankContent, "bank", maps?.bank);
-    const ledgerTxns = parseCsv(ledgerContent, "ledger", maps?.ledger);
-    const result = reconcile(bankTxns, ledgerTxns);
+    const { bankTxns, ledgerTxns, result } = cached;
 
     setFiles((f) => ({
       bank: f.bank ? { ...f.bank, rows: bankTxns.length } : null,
@@ -845,6 +973,13 @@ export function AppShell() {
       balanceProof: result.balanceProof,
     });
     setMatches(result.matches);
+    setCompositeMatches(result.compositeMatches);
+    if (result.compositeMatches.length > 0) {
+      console.log(
+        `[Reconly] ${result.compositeMatches.length} composite match(es) found:`,
+        result.compositeMatches
+      );
+    }
     setAnalyzed(true);
     // A fresh engine run from uploaded files is ALWAYS a new reconciliation —
     // never leave it bound to a record that happened to be open before (which
@@ -857,25 +992,98 @@ export function AppShell() {
   const startOver = () => {
     fileContentsRef.current = { bank: null, ledger: null };
     confirmedMapsRef.current = null;
+    reconCacheRef.current = null;
+    setReconCounts(null);
     setFiles({ bank: null, ledger: null });
     setInspections(null);
     setEngineOutput(null);
     setMatches([]);
+    setCompositeMatches([]);
+    setUserAddedEntries([]);
+    setAcknowledgedBankIds([]);
     setAnalyzed(false);
     setCurrentRecordId(null);
+    setSaveStatus("idle");
+    setUsingSampleData(false);
     setScreen("upload");
   };
 
-  // ---- Review decision handler -------------------------------------
-  const decide = (decision: ReviewDecision) => {
+  // ---- Review decision handler (one-to-one + composite) ---------------
+  const decide = (decision: ReviewDecision, meta?: ReviewMeta) => {
     const currentReviewItems = dashboardData?.reviewItems ?? [];
-    const currentItemId = currentReviewItems[0]?.id;
-    if (!currentItemId) return;
+    const current = currentReviewItems[0];
+    if (!current) return;
+    // Route composite items to the composite handler
+    if ("matchType" in current && current.matchType === "composite") {
+      if (decision === "manual") return; // composites don't support manual
+      decideComposite(current.id, decision, meta?.pickedCombination);
+      return;
+    }
     const newStatus: MatchStatus =
       decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "manual";
     setMatches((ms) =>
-      ms.map((m) => (m.id === currentItemId ? { ...m, status: newStatus } : m))
+      ms.map((m) => (m.id === current.id ? { ...m, status: newStatus } : m))
     );
+  };
+
+  // ---- Composite review decision handler ---------------------------
+  // Called by the composite review UI (Phase 3). For unambiguous composites,
+  // accept/reject works like one-to-one. Ambiguous accept additionally requires
+  // a pickedCombination to resolve which ledger IDs are confirmed.
+  const decideComposite = (
+    compositeId: string,
+    decision: "accept" | "reject",
+    pickedCombination?: string[] // required when accepting an ambiguous composite
+  ) => {
+    setCompositeMatches((cs) =>
+      cs.map((c): AnyCompositeMatch => {
+        if (c.id !== compositeId) return c;
+        if (decision === "reject") return { ...c, status: "rejected" } as AnyCompositeMatch;
+        // Accepting: if ambiguous and a combination was picked, narrow ledgerTxnIds
+        if (c.ambiguous && pickedCombination) {
+          return {
+            ...c,
+            status: "accepted",
+            ledgerTxnIds: pickedCombination,
+            ambiguous: false,
+            allCombinations: null,
+          } as AnyCompositeMatch;
+        }
+        return { ...c, status: "accepted" } as AnyCompositeMatch;
+      })
+    );
+  };
+
+  // ---- Missing-item resolution handlers ----------------------------
+
+  const handleAddToBooks = (tx: MissingTxn) => {
+    if (!engineOutput) return;
+    const original = engineOutput.baseMissingFromBooks.find((t) => t.id === tx.txnId);
+    if (!original) return;
+    setUserAddedEntries((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        txnId: original.id,
+        date: original.date,
+        description: original.description,
+        amount: original.amount,
+      },
+    ]);
+  };
+
+  const handleRemoveAdded = (txnId: string) => {
+    setUserAddedEntries((prev) => prev.filter((e) => e.txnId !== txnId));
+  };
+
+  const handleAcknowledgeBank = (tx: MissingTxn) => {
+    setAcknowledgedBankIds((prev) =>
+      prev.includes(tx.txnId) ? prev : [...prev, tx.txnId]
+    );
+  };
+
+  const handleUnacknowledgeBank = (txnId: string) => {
+    setAcknowledgedBankIds((prev) => prev.filter((id) => id !== txnId));
   };
 
   // ---- Persistence handlers ----------------------------------------
@@ -897,6 +1105,15 @@ export function AppShell() {
       balanceProof: result.balanceProof,
     });
     setMatches(restoredMatches);
+    // Restore saved composite decisions if available; otherwise use fresh engine output.
+    const savedComposites = record.compositeMatches ?? [];
+    const restoredComposites = result.compositeMatches.map((c): AnyCompositeMatch => {
+      const saved = savedComposites.find((s) => s.id === c.id);
+      return saved ? ({ ...c, status: saved.status } as AnyCompositeMatch) : c;
+    });
+    setCompositeMatches(restoredComposites);
+    setUserAddedEntries(record.userAddedEntries ?? []);
+    setAcknowledgedBankIds(record.acknowledgedBankIds ?? []);
     setCurrentRecordId(record.id);
     setAnalyzed(true);
     setScreen("dashboard");
@@ -917,20 +1134,30 @@ export function AppShell() {
       periodEnd: values.periodEnd,
       openingBalance,
       closingBalance: openingBalance + engineOutput.balanceProof.bankNetChange,
-      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches),
+      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches, compositeMatches),
       unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
       bankTxns: engineOutput.bankTxns,
       ledgerTxns: engineOutput.ledgerTxns,
       matches,
+      compositeMatches,
+      userAddedEntries,
+      acknowledgedBankIds,
     };
+    setSaveStatus("saving");
     repository
       .saveReconciliation(record)
       .then(() => {
         setCurrentRecordId(id);
         return repository.listReconciliations();
       })
-      .then(setSavedRecords)
-      .catch(console.error);
+      .then((records) => {
+        setSavedRecords(records);
+        flashSaved();
+      })
+      .catch((err) => {
+        console.error(err);
+        setSaveStatus("error");
+      });
     setSaveDialogOpen(false);
   };
 
@@ -944,17 +1171,27 @@ export function AppShell() {
       ...existing,
       updatedAt: now,
       closingBalance: existing.openingBalance + engineOutput.balanceProof.bankNetChange,
-      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches),
+      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches, compositeMatches),
       unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
       bankTxns: engineOutput.bankTxns,
       ledgerTxns: engineOutput.ledgerTxns,
       matches,
+      compositeMatches,
+      userAddedEntries,
+      acknowledgedBankIds,
     };
+    setSaveStatus("saving");
     repository
       .saveReconciliation(record)
       .then(() => repository.listReconciliations())
-      .then(setSavedRecords)
-      .catch(console.error);
+      .then((records) => {
+        setSavedRecords(records);
+        flashSaved();
+      })
+      .catch((err) => {
+        console.error(err);
+        setSaveStatus("error");
+      });
   };
 
   /** Called from TopBar save button. */
@@ -972,16 +1209,19 @@ export function AppShell() {
     const allTxns = [...engineOutput.bankTxns, ...engineOutput.ledgerTxns];
     const period = inferPeriod(allTxns);
     return {
-      accountName: currentRecord?.accountName ?? sampleData.account.name,
+      accountName: currentRecord?.accountName ?? "Unsaved reconciliation",
       periodStart: currentRecord?.periodStart ?? period?.start ?? "",
       periodEnd:   currentRecord?.periodEnd   ?? period?.end   ?? "",
       openingBalance: currentRecord?.openingBalance ?? null,
       closingBalance: currentRecord?.closingBalance ?? null,
       reconciled,
-      unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
+      unexplainedDifference: liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
       bankTxns:  engineOutput.bankTxns,
       ledgerTxns: engineOutput.ledgerTxns,
       matches,
+      compositeMatches,
+      userAddedEntries,
+      acknowledgedBankIds,
     };
   };
 
@@ -1023,6 +1263,9 @@ export function AppShell() {
           analyzed={analyzed}
           go={navigate}
           historyCount={savedRecords.length}
+          accountName={currentRecord?.accountName ?? null}
+          periodLabel={periodLabel}
+          showSampleBanner={usingSampleData}
         />
       )}
 
@@ -1036,6 +1279,7 @@ export function AppShell() {
             subtitle={topBarSubtitle}
             analyzed={analyzed}
             hasSavedRecord={Boolean(currentRecordId)}
+            saveStatus={saveStatus}
             onStartOver={startOver}
             onSave={handleSaveClick}
             onExportPdf={handleExportPdf}
@@ -1054,6 +1298,7 @@ export function AppShell() {
             {screen === "upload" && (
               <UploadScreen
                 files={files}
+                periodLabel={todayLabel}
                 onPick={pickFile}
                 onRemove={removeFile}
                 onSample={useSample}
@@ -1071,7 +1316,7 @@ export function AppShell() {
             )}
 
             {screen === "processing" && (
-              <ProcessingScreen onComplete={onProcessed} />
+              <ProcessingScreen onComplete={onProcessed} counts={reconCounts} />
             )}
 
             {screen === "dashboard" && dashboardData && (
@@ -1079,20 +1324,30 @@ export function AppShell() {
                 counts={dashboardData.counts}
                 reconciled={reconciled}
                 unexplained={unexplained}
-                balanceProof={engineOutput?.balanceProof}
+                balanceProof={liveBalanceProof ?? undefined}
                 reviewItems={dashboardData.reviewItems}
                 matched={dashboardData.matched}
                 matchedExtraCount={dashboardData.matchedExtraCount}
                 missingFromBooks={dashboardData.missingFromBooks}
+                addedToReconciliation={dashboardData.addedToReconciliation}
                 missingFromBank={dashboardData.missingFromBank}
+                acknowledgedBank={dashboardData.acknowledgedBank}
                 onOpenReview={() => setScreen("review")}
+                onAddToBooks={handleAddToBooks}
+                onRemoveAdded={handleRemoveAdded}
+                onAcknowledgeMissingBank={handleAcknowledgeBank}
+                onUnacknowledgeMissingBank={handleUnacknowledgeBank}
               />
             )}
 
             {screen === "review" && dashboardData && (
               <ReviewScreen
                 queue={dashboardData.reviewItems}
-                total={matches.filter((m) => m.type === "near").length}
+                total={
+                  matches.filter((m) => m.type === "near" || m.type === "fuzzy")
+                    .length +
+                  compositeMatches.filter((c) => c.status === "suggested").length
+                }
                 onDecide={decide}
                 onBack={() => setScreen("dashboard")}
               />

@@ -3,7 +3,7 @@
 // Pure TypeScript. No React. No framework imports.
 // ============================================================
 
-import type { Txn, Match } from "@/lib/recon/types";
+import type { Txn, Match, AnyCompositeMatch } from "@/lib/recon/types";
 import type { ReconciliationRecord } from "./repository";
 
 export function generateId(): string {
@@ -38,9 +38,14 @@ export function formatPeriod(start: string, end: string): string {
 /** Derive persisted status from engine output and current match decisions. */
 export function deriveStatus(
   unexplainedDifference: number,
-  matches: Pick<Match, "status">[]
+  matches: Pick<Match, "status">[],
+  compositeMatches: Pick<AnyCompositeMatch, "status">[] = []
 ): ReconciliationRecord["status"] {
   if (unexplainedDifference === 0) return "reconciled";
-  if (matches.some((m) => m.status === "suggested")) return "in_progress";
+  if (
+    matches.some((m) => m.status === "suggested") ||
+    compositeMatches.some((c) => c.status === "suggested")
+  )
+    return "in_progress";
   return "not_reconciled";
 }

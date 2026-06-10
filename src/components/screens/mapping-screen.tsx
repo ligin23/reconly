@@ -419,6 +419,7 @@ export function MappingScreen({ bank, ledger, onBack, onConfirm }: MappingScreen
             size="lg"
             disabled={!ready}
             iconRight="arrowRight"
+            data-testid="confirm-mapping-btn"
             onClick={() =>
               onConfirm({
                 bank: draftToMap(bankDraft),

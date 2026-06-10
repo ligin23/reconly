@@ -10,7 +10,8 @@
 // changes needed — all callers depend on this type, not the impl.
 // ============================================================
 
-import type { Txn, Match } from "@/lib/recon/types";
+import type { Txn, Match, AnyCompositeMatch } from "@/lib/recon/types";
+import type { UserAddedEntry } from "@/lib/sample-data";
 
 // ---- Domain record ---------------------------------------------------
 
@@ -37,6 +38,12 @@ export interface ReconciliationRecord {
   bankTxns: Txn[];
   ledgerTxns: Txn[];
   matches: Match[];
+  /** Composite match decisions. Optional for backward-compat. Defaults to [] on load. */
+  compositeMatches?: AnyCompositeMatch[];
+  /** Bank transactions the user explicitly added to the working copy. Optional for backward-compat. */
+  userAddedEntries?: UserAddedEntry[];
+  /** Engine Txn IDs the user has marked as "expected/outstanding" in the bank. Optional for backward-compat. */
+  acknowledgedBankIds?: string[];
 }
 
 // ---- Repository interface -------------------------------------------

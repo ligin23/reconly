@@ -1,0 +1,17 @@
+Txn Date,Memo,Amount,Reference
+2025-05-02,Blue Bottle Coffee,-5.75,
+2025-05-02,Acme LLC - Invoice 1001,2500.00,INV1001
+2025-05-04,Amazon - office supplies,-89.99,
+2025-05-06,Blue Bottle Coffee,-5.75,
+2025-05-07,Uber - client meeting,-23.40,
+2025-05-09,Check 1042 - landlord rent,-500.00,1042
+2025-05-12,Payment from J. Smith,-1200.00,
+2025-05-14,Verizon phone bill,-85.00,
+2025-05-15,Whole Foods,-142.18,
+2025-05-18,Amazon - cables,-34.50,
+2025-05-22,Starbucks,-6.45,
+2025-05-23,Beta Inc - Invoice 1002,1800.00,INV1002
+2025-05-25,Adobe Creative Cloud,-54.99,
+2025-05-27,Google Workspace,-12.00,
+2025-05-28,Shell gas,-52.30,
+2025-05-29,Check 1043 - contractor,-750.00,1043

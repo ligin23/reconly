@@ -15,6 +15,7 @@ type ButtonProps = {
   onClick?: () => void;
   style?: CSSProperties;
   title?: string;
+  "data-testid"?: string;
 };
 
 export function Button({
@@ -28,6 +29,7 @@ export function Button({
   onClick,
   style,
   title,
+  "data-testid": testId,
 }: ButtonProps) {
   const cls = [
     "btn",
@@ -46,6 +48,7 @@ export function Button({
       style={style}
       title={title}
       type="button"
+      data-testid={testId}
     >
       {icon && <Icon name={icon} size={iconSize} />}
       {children}

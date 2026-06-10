@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { reconcile, DATE_WINDOW, NEAR_DESC_THRESHOLD, enrichReasons } from "../engine";
+import {
+  reconcile,
+  DATE_WINDOW,
+  NEAR_DESC_THRESHOLD,
+  COMPOSITE_DATE_WINDOW,
+  COMPOSITE_MAX_GROUP,
+  COMPOSITE_MIN_GROUP,
+  enrichReasons,
+  findCompositeMatches,
+} from "../engine";
 import { normalize } from "../normalize";
 import { descriptionSimilarity } from "../similarity";
 import type { Txn } from "../types";
@@ -336,5 +345,354 @@ describe("engine constants", () => {
   it("NEAR_DESC_THRESHOLD is between 0 and 1", () => {
     expect(NEAR_DESC_THRESHOLD).toBeGreaterThan(0);
     expect(NEAR_DESC_THRESHOLD).toBeLessThan(1);
+  });
+});
+
+// ======================================================================
+// 9. reconcile() with composite matching wired in
+// ======================================================================
+
+describe("reconcile — composite matching wired in", () => {
+  // Bank: one $1,000 deposit that's three ledger invoices batched together.
+  // Ledger: three invoices plus one unrelated payment that matches one-to-one.
+  const bankTxns: Txn[] = [
+    bank("b1", "2026-03-15", "Bulk deposit", 100000),   // $1,000 composite target
+    bank("b2", "2026-03-20", "Client payment", 50000),  // $500 one-to-one
+  ];
+  const ledgerTxns: Txn[] = [
+    ledger("l1", "2026-03-12", "Invoice #101", 30000),  // $300 — composite component
+    ledger("l2", "2026-03-13", "Invoice #102", 30000),  // $300 — composite component
+    ledger("l3", "2026-03-14", "Invoice #103", 40000),  // $400 — composite component
+    ledger("l4", "2026-03-20", "Client payment", 50000), // $500 — one-to-one match for b2
+  ];
+
+  it("returns composite matches alongside one-to-one matches", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+    expect(result.compositeMatches).toHaveLength(1);
+    expect(result.compositeMatches[0].bankTxnId).toBe("b1");
+    expect(result.compositeMatches[0].ledgerTxnIds).toEqual(
+      expect.arrayContaining(["l1", "l2", "l3"])
+    );
+  });
+
+  it("composite bank txn is NOT in missingFromBooks", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+    const missingIds = result.missingFromBooks.map((t) => t.id);
+    expect(missingIds).not.toContain("b1");
+  });
+
+  it("composite ledger txns are NOT in missingFromBank", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+    const missingIds = result.missingFromBank.map((t) => t.id);
+    expect(missingIds).not.toContain("l1");
+    expect(missingIds).not.toContain("l2");
+    expect(missingIds).not.toContain("l3");
+  });
+
+  it("one-to-one matches still work alongside composites", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].bankTxnId).toBe("b2");
+    expect(result.matches[0].ledgerTxnId).toBe("l4");
+  });
+
+  it("composite suggestions do NOT contribute to clearedSum (only accepted matches do)", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+    // b2:l4 is an exact match → accepted → contributes $500
+    // b1 composite is suggested → NOT cleared
+    expect(result.balanceProof.clearedSum).toBe(50000);
+  });
+
+  it("integrity: every txn is accounted for exactly once", () => {
+    const result = reconcile(bankTxns, ledgerTxns);
+
+    const accountedBankIds = new Set<string>([
+      ...result.matches.map((m) => m.bankTxnId),
+      ...result.compositeMatches.map((c) => c.bankTxnId),
+      ...result.missingFromBooks.map((t) => t.id),
+    ]);
+    const accountedLedgerIds = new Set<string>([
+      ...result.matches.map((m) => m.ledgerTxnId),
+      ...result.compositeMatches.flatMap((c) => c.ledgerTxnIds),
+      ...result.missingFromBank.map((t) => t.id),
+    ]);
+
+    expect(accountedBankIds.size).toBe(bankTxns.length);
+    expect(accountedLedgerIds.size).toBe(ledgerTxns.length);
+    for (const t of bankTxns) expect(accountedBankIds.has(t.id)).toBe(true);
+    for (const t of ledgerTxns) expect(accountedLedgerIds.has(t.id)).toBe(true);
+  });
+});
+
+// ======================================================================
+// 10. findCompositeMatches — pure search (Phase 1 tests)
+// ======================================================================
+
+describe("findCompositeMatches", () => {
+  // ------------------------------------------------------------------ //
+  // Basic: clean 3-invoice → 1 deposit
+  // ------------------------------------------------------------------ //
+
+  it("finds an unambiguous 3-item composite match", () => {
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Bulk deposit", 100000), // $1,000
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice #101", 30000), // $300
+      ledger("l2", "2026-03-13", "Invoice #102", 30000), // $300
+      ledger("l3", "2026-03-14", "Invoice #103", 40000), // $400
+    ];
+    const results = findCompositeMatches(bankTxns, ledgerTxns);
+
+    expect(results).toHaveLength(1);
+    const m = results[0];
+    expect(m.ambiguous).toBe(false);
+    expect(m.type).toBe("composite");
+    expect(m.status).toBe("suggested");
+    expect(m.bankTxnId).toBe("b1");
+    expect(m.ledgerTxnIds).toHaveLength(3);
+    expect(m.ledgerTxnIds).toEqual(expect.arrayContaining(["l1", "l2", "l3"]));
+  });
+
+  it("generates plain-English reasons mentioning count and total", () => {
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Bulk deposit", 100000),
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice #101", 30000),
+      ledger("l2", "2026-03-13", "Invoice #102", 30000),
+      ledger("l3", "2026-03-14", "Invoice #103", 40000),
+    ];
+    const [m] = findCompositeMatches(bankTxns, ledgerTxns);
+    expect(m.reasons.length).toBeGreaterThan(0);
+    expect(m.reasons[0]).toMatch(/3 items/);
+    expect(m.reasons[0]).toMatch(/\$1,000\.00/);
+  });
+
+  // ------------------------------------------------------------------ //
+  // HARD GATE: ambiguous case must NEVER be auto-picked
+  // ------------------------------------------------------------------ //
+
+  it("flags as ambiguous when two combinations sum to the same target", () => {
+    // Two valid combos: [l1,l2] = 500+500 = 1000  and  [l3,l4] = 300+700 = 1000
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Bulk deposit", 100000),
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice A", 50000), // $500
+      ledger("l2", "2026-03-12", "Invoice B", 50000), // $500
+      ledger("l3", "2026-03-13", "Invoice C", 30000), // $300
+      ledger("l4", "2026-03-13", "Invoice D", 70000), // $700
+    ];
+    const results = findCompositeMatches(bankTxns, ledgerTxns);
+
+    expect(results).toHaveLength(1);
+    const m = results[0];
+    expect(m.ambiguous).toBe(true);
+  });
+
+  it("NEVER auto-selects a combination when the match is ambiguous", () => {
+    // This is the hard gate: if ambiguous, allCombinations must have length > 1
+    // and ledgerTxnIds must be the UNION (not one picked set)
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Bulk deposit", 100000),
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice A", 50000),
+      ledger("l2", "2026-03-12", "Invoice B", 50000),
+      ledger("l3", "2026-03-13", "Invoice C", 30000),
+      ledger("l4", "2026-03-13", "Invoice D", 70000),
+    ];
+    const results = findCompositeMatches(bankTxns, ledgerTxns);
+    const m = results[0];
+
+    // Must be flagged ambiguous
+    expect(m.ambiguous).toBe(true);
+
+    // allCombinations holds both competing sets
+    if (m.ambiguous) {
+      expect(m.allCombinations).toHaveLength(2);
+      // Both combinations must be present (order-independent)
+      const flatCombos = m.allCombinations.map((c) => [...c].sort().join(","));
+      expect(flatCombos).toEqual(expect.arrayContaining(["l1,l2", "l3,l4"]));
+    }
+
+    // ledgerTxnIds is the UNION, not a pre-selected winner
+    expect(m.ledgerTxnIds).toHaveLength(4);
+    expect(m.ledgerTxnIds).toEqual(
+      expect.arrayContaining(["l1", "l2", "l3", "l4"])
+    );
+  });
+
+  // ------------------------------------------------------------------ //
+  // No match cases
+  // ------------------------------------------------------------------ //
+
+  it("returns nothing when no combination sums to the target", () => {
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Deposit", 100000), // $1,000
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice A", 40000), // $400
+      ledger("l2", "2026-03-12", "Invoice B", 40000), // $400 — 400+400 ≠ 1000
+    ];
+    expect(findCompositeMatches(bankTxns, ledgerTxns)).toHaveLength(0);
+  });
+
+  // ------------------------------------------------------------------ //
+  // Date window constraint
+  // ------------------------------------------------------------------ //
+
+  it("excludes items outside COMPOSITE_DATE_WINDOW", () => {
+    // l1 is 15 days before the bank txn — outside the 14-day window
+    const bankDate = "2026-03-30";
+    const outsideDate = "2026-03-14"; // 16 days before
+    const insideDate = "2026-03-28"; //  2 days before
+
+    const bankTxns: Txn[] = [bank("b1", bankDate, "Deposit", 100000)];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", outsideDate, "Invoice A", 60000), // outside window
+      ledger("l2", insideDate, "Invoice B", 40000),  // inside window
+      // Only l2 is eligible, and 40000 alone < 100000 → no valid combo
+    ];
+    expect(findCompositeMatches(bankTxns, ledgerTxns)).toHaveLength(0);
+  });
+
+  it("COMPOSITE_DATE_WINDOW is wider than DATE_WINDOW", () => {
+    expect(COMPOSITE_DATE_WINDOW).toBeGreaterThan(DATE_WINDOW);
+  });
+
+  // ------------------------------------------------------------------ //
+  // Sign constraint — no mixing inflows and outflows
+  // ------------------------------------------------------------------ //
+
+  it("does not mix inflows and outflows in a combination", () => {
+    // Mixed-sign combo ($1200 + -$200 = $1000) must be rejected.
+    // Only the same-sign combo ($600 + $400 = $1000) should be proposed.
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Deposit", 100000), // +$1000 inflow
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Big credit", 120000),  // +$1200 — inflow
+      ledger("l2", "2026-03-12", "Refund out", -20000),  // -$200  — outflow (filtered)
+      ledger("l3", "2026-03-12", "Invoice A", 60000),    // +$600  — inflow
+      ledger("l4", "2026-03-12", "Invoice B", 40000),    // +$400  — inflow
+    ];
+    const results = findCompositeMatches(bankTxns, ledgerTxns);
+
+    expect(results).toHaveLength(1);
+    const m = results[0];
+    expect(m.ambiguous).toBe(false);
+    // Must use the same-sign pair [l3, l4], not the mixed-sign pair [l1, l2]
+    expect(m.ledgerTxnIds).toEqual(expect.arrayContaining(["l3", "l4"]));
+    expect(m.ledgerTxnIds).not.toContain("l1");
+    expect(m.ledgerTxnIds).not.toContain("l2");
+  });
+
+  // ------------------------------------------------------------------ //
+  // Group size constraint
+  // ------------------------------------------------------------------ //
+
+  it("does not propose a single-item match (min group is COMPOSITE_MIN_GROUP)", () => {
+    // Single item exactly matching the bank amount must NOT become a composite —
+    // that is handled by one-to-one matching, not composite matching.
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Deposit", 100000),
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Single invoice", 100000), // exact match, single item
+    ];
+    expect(findCompositeMatches(bankTxns, ledgerTxns)).toHaveLength(0);
+  });
+
+  it("does not search combinations larger than COMPOSITE_MAX_GROUP", () => {
+    // Five items each worth $200 summing to $1000 — requires 5 items (> max of 4)
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Deposit", 100000), // $1,000
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice 1", 20000),
+      ledger("l2", "2026-03-12", "Invoice 2", 20000),
+      ledger("l3", "2026-03-12", "Invoice 3", 20000),
+      ledger("l4", "2026-03-12", "Invoice 4", 20000),
+      ledger("l5", "2026-03-12", "Invoice 5", 20000),
+    ];
+    // Only valid combination needs all 5 items — must be rejected
+    expect(findCompositeMatches(bankTxns, ledgerTxns)).toHaveLength(0);
+  });
+
+  it("COMPOSITE_MIN_GROUP is 2 and COMPOSITE_MAX_GROUP is 4", () => {
+    expect(COMPOSITE_MIN_GROUP).toBe(2);
+    expect(COMPOSITE_MAX_GROUP).toBe(4);
+  });
+
+  // ------------------------------------------------------------------ //
+  // Integrity: nothing double-counted across multiple composites
+  // ------------------------------------------------------------------ //
+
+  it("does not assign the same ledger txn to two different composites", () => {
+    // b1 and b2 both want [l1, l2] — only b1 (earlier date) should win
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Deposit A", 70000), // $700 — earlier, higher priority
+      bank("b2", "2026-03-16", "Deposit B", 70000), // $700 — later, loses the conflict
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice 1", 30000), // $300
+      ledger("l2", "2026-03-12", "Invoice 2", 40000), // $400
+      // 300+400=700 — the only valid combo, wanted by both b1 and b2
+    ];
+    const results = findCompositeMatches(bankTxns, ledgerTxns);
+
+    // Only one composite is proposed (b1 wins, b2 is dropped)
+    expect(results).toHaveLength(1);
+    expect(results[0].bankTxnId).toBe("b1");
+
+    // Collect ALL ledger IDs across all composites — must have no duplicates
+    const allLedgerIds: string[] = [];
+    for (const m of results) allLedgerIds.push(...m.ledgerTxnIds);
+    expect(new Set(allLedgerIds).size).toBe(allLedgerIds.length);
+  });
+
+  // ------------------------------------------------------------------ //
+  // Determinism
+  // ------------------------------------------------------------------ //
+
+  it("produces identical output when called twice with the same input", () => {
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-15", "Bulk deposit", 100000),
+    ];
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-12", "Invoice #101", 30000),
+      ledger("l2", "2026-03-13", "Invoice #102", 30000),
+      ledger("l3", "2026-03-14", "Invoice #103", 40000),
+    ];
+    const r1 = findCompositeMatches(bankTxns, ledgerTxns);
+    const r2 = findCompositeMatches(bankTxns, ledgerTxns);
+    expect(r1).toEqual(r2);
+  });
+
+  // ------------------------------------------------------------------ //
+  // Role-parameterized seam: swapping sides searches the reverse direction
+  // ------------------------------------------------------------------ //
+
+  it("works in the reverse role (future seam: one-ledger → many-bank)", () => {
+    // Swap: one ledger payment split across two bank debits
+    // ledger: one $700 payment
+    // bank: two debits $300 + $400 summing to $700
+    const ledgerTxns: Txn[] = [
+      ledger("l1", "2026-03-15", "Single payment", -70000), // -$700
+    ];
+    const bankTxns: Txn[] = [
+      bank("b1", "2026-03-13", "Debit part 1", -30000), // -$300
+      bank("b2", "2026-03-14", "Debit part 2", -40000), // -$400
+    ];
+    // Call with roles reversed: one-side = ledger, many-side = bank
+    const results = findCompositeMatches(ledgerTxns, bankTxns);
+    expect(results).toHaveLength(1);
+    expect(results[0].ambiguous).toBe(false);
+    expect(results[0].bankTxnId).toBe("l1"); // "one side" target
+    expect(results[0].ledgerTxnIds).toEqual(
+      expect.arrayContaining(["b1", "b2"])  // "many side" components
+    );
   });
 });

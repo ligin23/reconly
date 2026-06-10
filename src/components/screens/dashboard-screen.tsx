@@ -6,6 +6,7 @@ import {
   type Counts,
   type MissingTxn,
   type ReviewItem,
+  type AnyReviewItem,
   type SimpleTxn,
 } from "@/lib/sample-data";
 import { type BalanceProof } from "@/lib/recon/types";
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/ui/status-pill";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { TxnRow } from "@/components/ui/txn-row";
+import { MissingItemRow } from "@/components/ui/missing-item-row";
 import { InsightCard } from "@/components/ui/insight-card";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -128,6 +130,7 @@ function StatusHero({
     return (
       <div
         className="card"
+        data-testid="recon-status"
         style={{
           padding: 0,
           overflow: "hidden",
@@ -201,6 +204,7 @@ function StatusHero({
   return (
     <div
       className="card"
+      data-testid="recon-status"
       style={{
         padding: 0,
         overflow: "hidden",
@@ -290,22 +294,63 @@ function ListNote({ text }: { text: string }) {
   );
 }
 
+function ResolvedChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove: () => void;
+}) {
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+      <span
+        className="pill pill--matched"
+        style={{ fontSize: 12, gap: 5, whiteSpace: "nowrap" }}
+      >
+        <Icon name="check" size={11} stroke={2.5} />
+        {label}
+      </span>
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm"
+        onClick={onRemove}
+        style={{ fontSize: 12, padding: "0 8px", height: 26 }}
+        data-testid="remove-added-btn"
+      >
+        Undo
+      </button>
+    </span>
+  );
+}
+
 function TxnLists({
   counts,
   missingBooks,
+  addedToReconciliation,
   missingBank,
+  acknowledgedBank,
   reviewItems,
   matched,
   matchedExtra,
   onOpenReview,
+  onAddToBooks,
+  onRemoveAdded,
+  onAcknowledgeMissingBank,
+  onUnacknowledgeMissingBank,
 }: {
   counts: Counts;
   missingBooks: MissingTxn[];
+  addedToReconciliation: MissingTxn[];
   missingBank: MissingTxn[];
-  reviewItems: ReviewItem[];
+  acknowledgedBank: MissingTxn[];
+  reviewItems: AnyReviewItem[];
   matched: SimpleTxn[];
   matchedExtra: number;
   onOpenReview: () => void;
+  onAddToBooks?: (tx: MissingTxn) => void;
+  onRemoveAdded?: (txnId: string) => void;
+  onAcknowledgeMissingBank?: (tx: MissingTxn) => void;
+  onUnacknowledgeMissingBank?: (txnId: string) => void;
 }) {
   const [tab, setTab] = useState<"matched" | "review" | "missingBooks" | "missingBank">(
     "review"
@@ -313,7 +358,7 @@ function TxnLists({
   const TABS = [
     { key: "matched", label: "Matched", count: counts.matched },
     { key: "review", label: "Needs review", count: counts.review },
-    { key: "missingBooks", label: "Add to your books", count: counts.missingFromBooks },
+    { key: "missingBooks", label: "Not in your records", count: counts.missingFromBooks },
     { key: "missingBank", label: "Not cleared yet", count: counts.missingFromBank },
   ] as const;
 
@@ -334,6 +379,7 @@ function TxnLists({
             key={t.key}
             className="tab"
             data-active={tab === t.key ? "" : undefined}
+            data-testid={t.key === "missingBooks" ? "tab-missing-books" : undefined}
             onClick={() => setTab(t.key)}
           >
             {t.label}
@@ -381,15 +427,24 @@ function TxnLists({
           />
         ) : (
           <div>
-            {reviewItems.map((r) => (
-              <TxnRow
-                key={r.id}
-                tx={{ date: r.bank.date, desc: r.bank.desc, amount: r.amount, type: r.type }}
-                sub={`Maybe: ${r.books.desc} · ${r.confidence}% sure`}
-                pill={<StatusPill kind="review" />}
-                onClick={onOpenReview}
-              />
-            ))}
+            {reviewItems.map((r) => {
+              const isComposite = "matchType" in r && r.matchType === "composite";
+              const tx = isComposite
+                ? { date: r.bankDate, desc: r.bankDesc, amount: r.bankAmount, type: r.bankTxnType }
+                : { date: (r as ReviewItem).bank.date, desc: (r as ReviewItem).bank.desc, amount: (r as ReviewItem).amount, type: (r as ReviewItem).type };
+              const sub = isComposite
+                ? `Group (${r.components.length} items) · ${r.ambiguous ? "needs your pick" : money(r.bankAmount)}`
+                : `Maybe: ${(r as ReviewItem).books.desc} · ${(r as ReviewItem).confidence}% sure`;
+              return (
+                <TxnRow
+                  key={r.id}
+                  tx={tx}
+                  sub={sub}
+                  pill={<StatusPill kind="review" />}
+                  onClick={onOpenReview}
+                />
+              );
+            })}
             <div
               style={{
                 padding: "13px 18px",
@@ -417,26 +472,72 @@ function TxnLists({
 
       {tab === "missingBooks" && (
         <div>
-          <ListNote text="These are on your bank statement, but not written in your books yet." />
-          {missingBooks.length === 0 ? (
-            <EmptyState icon="checkCircle" title="Nothing here" body="Every bank transaction has a match in your books." />
+          <ListNote text="These are on your bank statement but not in your records yet. Add them to your reconciliation so your report is complete — you or your accountant can record them in your books afterwards." />
+          {missingBooks.length === 0 && addedToReconciliation.length === 0 ? (
+            <EmptyState icon="checkCircle" title="Nothing here" body="Every bank transaction has a matching entry in your records." />
           ) : (
-            missingBooks.map((tx, i) => (
-              <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBooks" />} />
-            ))
+            <>
+              {missingBooks.map((tx) => (
+                <MissingItemRow
+                  key={tx.txnId}
+                  tx={tx}
+                  hint={tx.hint}
+                  actionLabel="Add to my reconciliation"
+                  actionIcon="plus"
+                  onAction={onAddToBooks ? () => onAddToBooks(tx) : undefined}
+                />
+              ))}
+              {addedToReconciliation.map((tx) => (
+                <MissingItemRow
+                  key={tx.txnId}
+                  tx={tx}
+                  hint={tx.hint}
+                  actionLabel=""
+                  resolvedNode={
+                    <ResolvedChip
+                      label="Added to reconciliation"
+                      onRemove={() => onRemoveAdded?.(tx.txnId)}
+                    />
+                  }
+                />
+              ))}
+            </>
           )}
         </div>
       )}
 
       {tab === "missingBank" && (
         <div>
-          <ListNote text="These are in your books, but your bank hasn't shown them yet — usually just a matter of time." />
-          {missingBank.length === 0 ? (
-            <EmptyState icon="checkCircle" title="Nothing here" body="Everything in your books has cleared the bank." />
+          <ListNote text="These are in your records but haven't cleared your bank yet — this is normal and usually just a matter of timing." />
+          {missingBank.length === 0 && acknowledgedBank.length === 0 ? (
+            <EmptyState icon="checkCircle" title="Nothing here" body="Everything in your records has cleared the bank." />
           ) : (
-            missingBank.map((tx, i) => (
-              <TxnRow key={i} tx={tx} sub={tx.hint} pill={<StatusPill kind="missingBank" />} />
-            ))
+            <>
+              {missingBank.map((tx) => (
+                <MissingItemRow
+                  key={tx.txnId}
+                  tx={tx}
+                  hint={tx.hint}
+                  actionLabel="Mark as expected"
+                  actionIcon="check"
+                  onAction={onAcknowledgeMissingBank ? () => onAcknowledgeMissingBank(tx) : undefined}
+                />
+              ))}
+              {acknowledgedBank.map((tx) => (
+                <MissingItemRow
+                  key={tx.txnId}
+                  tx={tx}
+                  hint={tx.hint}
+                  actionLabel=""
+                  resolvedNode={
+                    <ResolvedChip
+                      label="Marked as expected"
+                      onRemove={() => onUnacknowledgeMissingBank?.(tx.txnId)}
+                    />
+                  }
+                />
+              ))}
+            </>
           )}
         </div>
       )}
@@ -451,12 +552,18 @@ export type DashboardScreenProps = {
   reconciled: boolean;
   unexplained: number;
   balanceProof?: BalanceProof;
-  reviewItems: ReviewItem[];
+  reviewItems: AnyReviewItem[];
   matched: SimpleTxn[];
   matchedExtraCount: number;
   missingFromBooks: MissingTxn[];
+  addedToReconciliation: MissingTxn[];
   missingFromBank: MissingTxn[];
+  acknowledgedBank: MissingTxn[];
   onOpenReview: () => void;
+  onAddToBooks?: (tx: MissingTxn) => void;
+  onRemoveAdded?: (txnId: string) => void;
+  onAcknowledgeMissingBank?: (tx: MissingTxn) => void;
+  onUnacknowledgeMissingBank?: (txnId: string) => void;
 };
 
 export function DashboardScreen({
@@ -468,17 +575,23 @@ export function DashboardScreen({
   matched,
   matchedExtraCount,
   missingFromBooks,
+  addedToReconciliation,
   missingFromBank,
+  acknowledgedBank,
   onOpenReview,
+  onAddToBooks,
+  onRemoveAdded,
+  onAcknowledgeMissingBank,
+  onUnacknowledgeMissingBank,
 }: DashboardScreenProps) {
   const reviewLeft = counts.review;
 
   // Dynamic insights derived from live counts/amounts
   const insights = reconciled
     ? [
-        "Every transaction on your bank statement now has a match in your books.",
+        "Every transaction on your bank statement now has a match in your records.",
         `${counts.matched} transaction${counts.matched === 1 ? "" : "s"} were matched automatically.`,
-        "Your books are fully up to date.",
+        "Your reconciliation is complete.",
       ]
     : [
         missingFromBank.length > 0
@@ -486,9 +599,9 @@ export function DashboardScreen({
           : "No outstanding items waiting to clear.",
         missingFromBooks.length > 0
           ? missingFromBooks.length === 1
-            ? `One item (${money(missingFromBooks[0].amount)}) is on your bank statement but not in your books yet. Adding it would help close the gap.`
-            : `${missingFromBooks.length} items are on your bank statement but not in your books yet.`
-          : "All bank transactions are recorded in your books.",
+            ? `One item (${money(missingFromBooks[0].amount)}) is on your bank statement but not in your records yet. Adding it to your reconciliation would help close the gap.`
+            : `${missingFromBooks.length} items are on your bank statement but not in your records yet.`
+          : "All bank transactions have matching entries in your records.",
         reviewLeft > 0
           ? `${reviewLeft} ${reviewLeft === 1 ? "pair looks" : "pairs look"} like a match but need a quick yes or no from you.`
           : "All pairs have been reviewed.",
@@ -518,10 +631,10 @@ export function DashboardScreen({
           onClick={reviewLeft ? onOpenReview : undefined}
         />
         <KpiCard
-          label="Add to your books"
+          label="Not in your records"
           value={counts.missingFromBooks}
           kind="problem"
-          hint="On the bank, not your books"
+          hint="On your bank, not in your records"
         />
         <KpiCard
           label="Not cleared yet"
@@ -536,11 +649,17 @@ export function DashboardScreen({
       <TxnLists
         counts={counts}
         missingBooks={missingFromBooks}
+        addedToReconciliation={addedToReconciliation}
         missingBank={missingFromBank}
+        acknowledgedBank={acknowledgedBank}
         reviewItems={reviewItems}
         matched={matched}
         matchedExtra={matchedExtraCount}
         onOpenReview={onOpenReview}
+        onAddToBooks={onAddToBooks}
+        onRemoveAdded={onRemoveAdded}
+        onAcknowledgeMissingBank={onAcknowledgeMissingBank}
+        onUnacknowledgeMissingBank={onUnacknowledgeMissingBank}
       />
     </div>
   );

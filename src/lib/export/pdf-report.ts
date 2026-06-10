@@ -6,9 +6,12 @@
 // FRAMING RULE (non-negotiable):
 //   This file describes findings only — never instructs the user
 //   to record entries, categorize transactions, or file taxes.
+//   User-added items are described as "to be recorded in your
+//   books" — NOT as "recorded" or "added to your books".
 // ============================================================
 
-import type { Match, Txn } from "@/lib/recon/types";
+import type { Match, Txn, AnyCompositeMatch } from "@/lib/recon/types";
+import type { UserAddedEntry } from "@/lib/sample-data";
 import { formatPeriod } from "@/lib/data/utils";
 
 export type PdfExportContext = {
@@ -22,6 +25,11 @@ export type PdfExportContext = {
   bankTxns: Txn[];
   ledgerTxns: Txn[];
   matches: Match[];
+  compositeMatches: AnyCompositeMatch[];
+  /** Bank txns the user added to the working copy — will be recorded in books. */
+  userAddedEntries: UserAddedEntry[];
+  /** Ledger txn IDs the user has acknowledged as outstanding (not yet cleared). */
+  acknowledgedBankIds: string[];
 };
 
 // ---- Internal helpers ------------------------------------------------
@@ -35,10 +43,6 @@ function dollars(cents: number): string {
   return cents < 0 ? `($${s})` : `$${s}`;
 }
 
-function signedDollars(cents: number): string {
-  return dollars(cents);
-}
-
 function shortDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString("en-US", {
@@ -50,7 +54,10 @@ function shortDate(iso: string): string {
 
 /** Derive attention buckets from match state + raw txn lists. */
 function deriveBuckets(ctx: PdfExportContext) {
-  const { matches, bankTxns, ledgerTxns } = ctx;
+  const {
+    matches, compositeMatches, bankTxns, ledgerTxns,
+    userAddedEntries, acknowledgedBankIds,
+  } = ctx;
 
   const acceptedBankIds = new Set<string>();
   const acceptedLedgerIds = new Set<string>();
@@ -76,14 +83,44 @@ function deriveBuckets(ctx: PdfExportContext) {
     // rejected → fall through to unmatched
   }
 
-  const missingFromBooks = bankTxns.filter(
+  // Accepted composite matches: bank side + all ledger sides
+  for (const c of compositeMatches) {
+    if (c.status === "accepted") {
+      acceptedBankIds.add(c.bankTxnId);
+      for (const id of c.ledgerTxnIds) acceptedLedgerIds.add(id);
+    } else if (c.status === "suggested") {
+      suggestedBankIds.add(c.bankTxnId);
+      for (const id of c.ledgerTxnIds) suggestedLedgerIds.add(id);
+    }
+  }
+
+  // All unmatched bank txns
+  const allMissingFromBooks = bankTxns.filter(
     (t) => !acceptedBankIds.has(t.id) && !suggestedBankIds.has(t.id)
   );
-  const missingFromBank = ledgerTxns.filter(
+
+  // Split by whether user has added them to the reconciliation
+  const addedTxnIds = new Set(userAddedEntries.map((e) => e.txnId));
+  const missingFromBooks = allMissingFromBooks.filter((t) => !addedTxnIds.has(t.id));
+
+  // All unmatched ledger txns
+  const allMissingFromBank = ledgerTxns.filter(
     (t) => !acceptedLedgerIds.has(t.id) && !suggestedLedgerIds.has(t.id)
   );
 
-  return { acceptedPairs, missingFromBooks, missingFromBank, reviewPairs };
+  // Split by whether user has acknowledged them
+  const acknowledgedSet = new Set(acknowledgedBankIds);
+  const missingFromBank = allMissingFromBank.filter((t) => !acknowledgedSet.has(t.id));
+  const acknowledgedBank = allMissingFromBank.filter((t) => acknowledgedSet.has(t.id));
+
+  return {
+    acceptedPairs,
+    reviewPairs,
+    missingFromBooks,
+    addedToReconciliation: userAddedEntries,
+    missingFromBank,
+    acknowledgedBank,
+  };
 }
 
 // ---- Colour palette (greyscale-safe, matches app tone) ---------------
@@ -96,6 +133,8 @@ const C = {
   goodBg:     [220, 252, 231] as [number, number, number], // green-100
   warn:       [120, 53, 15] as [number, number, number],   // amber-900
   warnBg:     [254, 243, 199] as [number, number, number], // amber-100
+  noteBg:     [238, 242, 255] as [number, number, number], // indigo-50 — resolved items
+  noteInk:    [55, 48, 163] as [number, number, number],   // indigo-800
   headBg:     [241, 241, 247] as [number, number, number], // light grey header row
   accentBg:   [238, 242, 255] as [number, number, number], // indigo tint
   white:      [255, 255, 255] as [number, number, number],
@@ -192,25 +231,31 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   doc.text("Summary", ML, y);
   y += 14;
 
-  const { acceptedPairs, missingFromBooks, missingFromBank, reviewPairs } =
-    deriveBuckets(ctx);
+  const {
+    acceptedPairs,
+    reviewPairs,
+    missingFromBooks,
+    addedToReconciliation,
+    missingFromBank,
+    acknowledgedBank,
+  } = deriveBuckets(ctx);
 
   const summaryRows: string[][] = [
     ["Matched transactions", String(acceptedPairs.length)],
-    ["On bank statement only", String(missingFromBooks.length)],
+    ["On bank statement, not yet in your records", String(missingFromBooks.length)],
+    ["Added to your reconciliation (to be recorded in your books)", String(addedToReconciliation.length)],
     ["In records, not yet cleared by bank", String(missingFromBank.length)],
+    ["Marked as outstanding — known timing difference", String(acknowledgedBank.length)],
     ["Possible matches (not confirmed)", String(reviewPairs.length)],
   ];
   if (ctx.openingBalance !== null) {
-    summaryRows.unshift(
-      ["Opening balance", dollars(ctx.openingBalance)],
-    );
+    summaryRows.unshift(["Opening balance", dollars(ctx.openingBalance)]);
   }
   if (ctx.closingBalance !== null) {
     summaryRows.push(["Closing balance (bank)", dollars(ctx.closingBalance)]);
   }
   summaryRows.push([
-    ctx.reconciled ? "Unexplained difference" : "Unexplained difference",
+    "Unexplained difference",
     ctx.reconciled ? "$0.00" : dollars(Math.abs(ctx.unexplainedDifference)),
   ]);
 
@@ -234,7 +279,8 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
     },
     alternateRowStyles: { fillColor: C.white },
     didParseCell(data) {
-      if (data.row.index === summaryRows.length - 1) {
+      const lastIdx = summaryRows.length - 1;
+      if (data.row.index === lastIdx) {
         data.cell.styles.fontStyle = "bold";
         data.cell.styles.textColor = ctx.reconciled ? C.good : C.warn;
       }
@@ -266,7 +312,8 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // ---- Helper: txn table (date / description / amount) --------------
   const txnTable = (
     rows: Array<[string, string, string]>,
-    emptyMsg: string
+    emptyMsg: string,
+    rowBg?: [number, number, number]
   ) => {
     if (rows.length === 0) {
       ensureSpace(30);
@@ -304,8 +351,25 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
         2: { cellWidth: 80, halign: "right" },
       },
       alternateRowStyles: { fillColor: C.white },
+      ...(rowBg
+        ? {
+            bodyStyles: { fillColor: rowBg },
+            alternateRowStyles: { fillColor: rowBg },
+          }
+        : {}),
     });
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 16;
+  };
+
+  // ---- Helper: inline note below a section -------------------------
+  const inlineNote = (note: string) => {
+    ensureSpace(28);
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(...C.ink3);
+    const lines = doc.splitTextToSize(note, CW - 20);
+    doc.text(lines, ML + 10, y + 12);
+    y += lines.length * 13 + 10;
   };
 
   // ==================================================================
@@ -355,7 +419,7 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   }
 
   // ==================================================================
-  // SECTION: ON BANK STATEMENT BUT NOT IN RECORDS
+  // SECTION: ON BANK STATEMENT BUT NOT IN RECORDS (unresolved)
   // ==================================================================
   sectionHeading(
     "On your bank statement but not in your records",
@@ -367,7 +431,26 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   );
 
   // ==================================================================
-  // SECTION: IN RECORDS BUT NOT YET CLEARED
+  // SECTION: ADDED TO YOUR RECONCILIATION (user-added, to be recorded)
+  // ==================================================================
+  if (addedToReconciliation.length > 0) {
+    sectionHeading(
+      "Added to your reconciliation",
+      `${addedToReconciliation.length} item${addedToReconciliation.length !== 1 ? "s" : ""} — to be recorded in your books`
+    );
+    inlineNote(
+      "These bank transactions are included in this reconciliation so your report is complete. " +
+      "You or your accountant will need to record them in your books."
+    );
+    txnTable(
+      addedToReconciliation.map((e) => [shortDate(e.date), e.description, dollars(e.amount)]),
+      "",
+      C.noteBg
+    );
+  }
+
+  // ==================================================================
+  // SECTION: IN RECORDS BUT NOT YET CLEARED (unacknowledged)
   // ==================================================================
   sectionHeading(
     "In your records but not yet cleared by your bank",
@@ -379,12 +462,31 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   );
 
   // ==================================================================
+  // SECTION: MARKED AS OUTSTANDING (acknowledged — timing only)
+  // ==================================================================
+  if (acknowledgedBank.length > 0) {
+    sectionHeading(
+      "Marked as outstanding — known timing difference",
+      `${acknowledgedBank.length} item${acknowledgedBank.length !== 1 ? "s" : ""}`
+    );
+    inlineNote(
+      "These are in your records but your bank hasn't processed them yet. " +
+      "This is a normal timing difference — no action needed."
+    );
+    txnTable(
+      acknowledgedBank.map((t) => [shortDate(t.date), t.description, dollars(t.amount)]),
+      "",
+      C.noteBg
+    );
+  }
+
+  // ==================================================================
   // SECTION: POSSIBLE MATCHES (REVIEW ITEMS)
   // ==================================================================
   if (reviewPairs.length > 0) {
     sectionHeading(
-      "Possible matches we weren’t sure about",
-      `${reviewPairs.length} pair${reviewPairs.length !== 1 ? "s" : ""} — amounts are close but something didn’t line up exactly`
+      "Possible matches we weren't sure about",
+      `${reviewPairs.length} pair${reviewPairs.length !== 1 ? "s" : ""} — amounts are close but something didn't line up exactly`
     );
 
     ensureSpace(reviewPairs.length * 28 + 30);

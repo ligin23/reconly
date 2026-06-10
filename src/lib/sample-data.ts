@@ -15,7 +15,17 @@ export type SimpleTxn = {
 };
 
 export type MissingTxn = SimpleTxn & {
+  txnId: string; // traces back to the original engine Txn.id
   hint: string;
+};
+
+/** A bank transaction the user has explicitly added to the working copy. */
+export type UserAddedEntry = {
+  id: string;         // stable entry ID (for removal)
+  txnId: string;      // original engine Txn.id
+  date: string;       // ISO yyyy-mm-dd
+  description: string;
+  amount: number;     // signed cents
 };
 
 export type ReviewReason = {
@@ -31,6 +41,9 @@ export type ReviewSide = {
 
 export type ReviewItem = {
   id: string;
+  /** Which engine tier proposed this pairing. Absent = near (legacy data).
+   *  "fuzzy" renders the lowest-confidence treatment in the review card. */
+  matchType?: "near" | "fuzzy";
   confidence: number;
   amount: number; // cents (positive)
   type: TxnType;
@@ -38,6 +51,37 @@ export type ReviewItem = {
   books: ReviewSide;
   reasons: ReviewReason[];
 };
+
+/** One ledger item that is part of a composite group. */
+export type CompositeComponent = {
+  id: string;         // ledger txn ID (used to identify the picked combo)
+  date: string;       // formatted display date, e.g. "Mar 12"
+  desc: string;
+  amount: number;     // cents, positive
+  type: TxnType;      // "in" | "out"
+};
+
+/**
+ * A composite review item: several ledger entries that together explain one
+ * bank transaction. Always needs human review — never auto-accepted.
+ */
+export type CompositeReviewItem = {
+  id: string;            // composite match ID, e.g. "composite:b3"
+  matchType: "composite";
+  bankDate: string;
+  bankDesc: string;
+  bankAmount: number;    // cents, positive
+  bankTxnType: TxnType;
+  /** Unambiguous: the definite components. Ambiguous: union of all candidates. */
+  components: CompositeComponent[];
+  reasons: ReviewReason[];
+  ambiguous: boolean;
+  /** Populated only when ambiguous=true. Each inner array is one selectable option. */
+  allCombinations: CompositeComponent[][] | null;
+};
+
+/** The review queue holds both one-to-one near matches and composite matches. */
+export type AnyReviewItem = ReviewItem | CompositeReviewItem;
 
 export type Account = {
   name: string;
@@ -221,15 +265,15 @@ const review: ReviewItem[] = [
 ];
 
 const missingFromBooks: MissingTxn[] = [
-  { date: "Mar 29", desc: "Monthly account fee", who: "Cedar Mutual", amount: 3500, type: "out", hint: "A $35 bank fee that isn't in your books yet." },
-  { date: "Mar 23", desc: "Card foreign-use fee", who: "Cedar Mutual", amount: 410, type: "out", hint: "Small fee from an overseas charge." },
-  { date: "Mar 16", desc: "Interest earned", who: "Cedar Mutual", amount: 120, type: "in", hint: "A little interest the bank paid you." },
-  { date: "Mar 06", desc: "Returned payment fee", who: "Cedar Mutual", amount: 1500, type: "out", hint: "Charged when a payment bounced." },
+  { txnId: "sample-mb-1", date: "Mar 29", desc: "Monthly account fee", who: "Cedar Mutual", amount: 3500, type: "out", hint: "A $35 bank fee that isn't in your records yet." },
+  { txnId: "sample-mb-2", date: "Mar 23", desc: "Card foreign-use fee", who: "Cedar Mutual", amount: 410, type: "out", hint: "Small fee from an overseas charge." },
+  { txnId: "sample-mb-3", date: "Mar 16", desc: "Interest earned", who: "Cedar Mutual", amount: 120, type: "in", hint: "A little interest the bank paid you." },
+  { txnId: "sample-mb-4", date: "Mar 06", desc: "Returned payment fee", who: "Cedar Mutual", amount: 1500, type: "out", hint: "Charged when a payment bounced." },
 ];
 
 const missingFromBank: MissingTxn[] = [
-  { date: "Mar 30", desc: "Check #112 — illustrator", who: "Sam Okafor", amount: 45000, type: "out", hint: "You wrote this check, but it hasn't cleared the bank yet." },
-  { date: "Mar 28", desc: "Check #113 — print run", who: "Press Bros.", amount: 28000, type: "out", hint: "Written, but the bank hasn't taken it yet." },
+  { txnId: "sample-mbank-1", date: "Mar 30", desc: "Check #112 — illustrator", who: "Sam Okafor", amount: 45000, type: "out", hint: "You wrote this check, but it hasn't cleared the bank yet." },
+  { txnId: "sample-mbank-2", date: "Mar 28", desc: "Check #113 — print run", who: "Press Bros.", amount: 28000, type: "out", hint: "Written, but the bank hasn't taken it yet." },
 ];
 
 export const sampleData: ReconData = {

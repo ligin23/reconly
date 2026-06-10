@@ -5,7 +5,7 @@ export type StatusPillKind = "matched" | "review" | "missingBooks" | "missingBan
 export const PILL_LABEL: Record<StatusPillKind, string> = {
   matched: "Matched",
   review: "Needs review",
-  missingBooks: "Add to books",
+  missingBooks: "Not in your records",
   missingBank: "Not cleared yet",
   problem: "Problem",
 };

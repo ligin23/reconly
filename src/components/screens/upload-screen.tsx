@@ -2,7 +2,6 @@
 
 import { useRef, useState } from "react";
 import type { FileMeta } from "@/lib/sample-data";
-import { sampleData } from "@/lib/sample-data";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 
@@ -14,12 +13,14 @@ function UploadCard({
   file,
   onPick,
   onRemove,
+  testIdInput,
 }: {
   side: UploadSide;
   file: FileMeta | null;
   /** Called with the selected File when the user picks or drops a CSV. */
   onPick: (file: File) => void;
   onRemove: () => void;
+  testIdInput?: string;
 }) {
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -236,6 +237,7 @@ function UploadCard({
         type="file"
         accept=".csv"
         style={{ display: "none" }}
+        data-testid={testIdInput}
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) onPick(file);
@@ -249,6 +251,8 @@ function UploadCard({
 
 type UploadScreenProps = {
   files: UploadFiles;
+  /** Current-month label, e.g. "June 2026". Empty until known (first client render). */
+  periodLabel: string;
   /** Called with the actual File object when the user selects or drops a CSV. */
   onPick: (side: UploadSide, file: File) => void;
   onRemove: (side: UploadSide) => void;
@@ -257,13 +261,13 @@ type UploadScreenProps = {
   onStart: () => void;
 };
 
-export function UploadScreen({ files, onPick, onRemove, onSample, onStart }: UploadScreenProps) {
+export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onStart }: UploadScreenProps) {
   const ready = Boolean(files.bank && files.ledger);
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "12px 8px 40px" }}>
       <div style={{ textAlign: "center", marginBottom: 30 }}>
         <span className="eyebrow" style={{ color: "var(--accent-ink)" }}>
-          New reconciliation · {sampleData.account.period}
+          New reconciliation{periodLabel ? ` · ${periodLabel}` : ""}
         </span>
         <h1
           className="serif"
@@ -297,12 +301,14 @@ export function UploadScreen({ files, onPick, onRemove, onSample, onStart }: Upl
           file={files.bank}
           onPick={(file) => onPick("bank", file)}
           onRemove={() => onRemove("bank")}
+          testIdInput="bank-file-input"
         />
         <UploadCard
           side="ledger"
           file={files.ledger}
           onPick={(file) => onPick("ledger", file)}
           onRemove={() => onRemove("ledger")}
+          testIdInput="ledger-file-input"
         />
       </div>
 
@@ -322,6 +328,7 @@ export function UploadScreen({ files, onPick, onRemove, onSample, onStart }: Upl
           iconRight="arrowRight"
           onClick={onStart}
           style={{ minWidth: 210 }}
+          data-testid="start-analysis-btn"
         >
           Start analysis
         </Button>

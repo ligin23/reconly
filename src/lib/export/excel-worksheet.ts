@@ -6,13 +6,14 @@
 // FRAMING RULE (non-negotiable):
 //   This file describes findings only — never instructs the user
 //   to record entries, categorize transactions, or file taxes.
+//   User-added items are described as "to be recorded in your
+//   books" — NOT as "recorded" or "added to your books".
 // ============================================================
 
-import type { Match, Txn } from "@/lib/recon/types";
+import type { Match, Txn, AnyCompositeMatch } from "@/lib/recon/types";
+import type { UserAddedEntry } from "@/lib/sample-data";
 import { formatPeriod } from "@/lib/data/utils";
 
-// Re-use the same context shape as the PDF export so the caller
-// only needs to build one object for both exports.
 export type ExcelExportContext = {
   accountName: string;
   periodStart: string; // ISO yyyy-mm-dd
@@ -24,6 +25,11 @@ export type ExcelExportContext = {
   bankTxns: Txn[];
   ledgerTxns: Txn[];
   matches: Match[];
+  compositeMatches: AnyCompositeMatch[];
+  /** Bank txns the user added to the working copy — will be recorded in books. */
+  userAddedEntries: UserAddedEntry[];
+  /** Ledger txn IDs the user has acknowledged as outstanding (not yet cleared). */
+  acknowledgedBankIds: string[];
 };
 
 // ---- Internal helpers ------------------------------------------------
@@ -46,9 +52,12 @@ function shortDate(iso: string): string {
   });
 }
 
-/** Derive attention buckets — same logic as adapter.ts + pdf-report.ts. */
+/** Derive attention buckets — mirrors pdf-report.ts deriveBuckets. */
 function deriveBuckets(ctx: ExcelExportContext) {
-  const { matches, bankTxns, ledgerTxns } = ctx;
+  const {
+    matches, compositeMatches, bankTxns, ledgerTxns,
+    userAddedEntries, acknowledgedBankIds,
+  } = ctx;
 
   const acceptedBankIds = new Set<string>();
   const acceptedLedgerIds = new Set<string>();
@@ -75,18 +84,43 @@ function deriveBuckets(ctx: ExcelExportContext) {
     // rejected → falls to unmatched
   }
 
-  const missingFromBooks = bankTxns.filter(
+  // Accepted composite matches
+  for (const c of compositeMatches) {
+    if (c.status === "accepted") {
+      acceptedBankIds.add(c.bankTxnId);
+      for (const id of c.ledgerTxnIds) acceptedLedgerIds.add(id);
+    } else if (c.status === "suggested") {
+      suggestedBankIds.add(c.bankTxnId);
+      for (const id of c.ledgerTxnIds) suggestedLedgerIds.add(id);
+    }
+  }
+
+  const allMissingFromBooks = bankTxns.filter(
     (t) => !acceptedBankIds.has(t.id) && !suggestedBankIds.has(t.id)
   );
-  const missingFromBank = ledgerTxns.filter(
+
+  const addedTxnIds = new Set(userAddedEntries.map((e) => e.txnId));
+  const missingFromBooks = allMissingFromBooks.filter((t) => !addedTxnIds.has(t.id));
+
+  const allMissingFromBank = ledgerTxns.filter(
     (t) => !acceptedLedgerIds.has(t.id) && !suggestedLedgerIds.has(t.id)
   );
 
-  return { acceptedPairs, missingFromBooks, missingFromBank, reviewPairs };
+  const acknowledgedSet = new Set(acknowledgedBankIds);
+  const missingFromBank = allMissingFromBank.filter((t) => !acknowledgedSet.has(t.id));
+  const acknowledgedBank = allMissingFromBank.filter((t) => acknowledgedSet.has(t.id));
+
+  return {
+    acceptedPairs,
+    reviewPairs,
+    missingFromBooks,
+    addedToReconciliation: userAddedEntries,
+    missingFromBank,
+    acknowledgedBank,
+  };
 }
 
 // ---- Style constants -------------------------------------------------
-// One palette, applied consistently. No rainbow.
 
 type CellStyle = {
   font?: {
@@ -110,58 +144,51 @@ type CellStyle = {
   numFmt?: string;
 };
 
-// Shared colours
-const GREY_HEADER_BG = "F1F1F7";  // section header fill
-const GREEN_BG       = "DCFCE7";  // reconciled verdict
+const GREY_HEADER_BG = "F1F1F7";
+const GREEN_BG       = "DCFCE7";
 const GREEN_INK      = "166534";
-const AMBER_BG       = "FEF3C7";  // not-reconciled verdict
+const AMBER_BG       = "FEF3C7";
 const AMBER_INK      = "78350F";
 const DIVIDER_COLOR  = "DCDDE4";
 const MUTED_INK      = "808299";
 const BLACK          = "1E1E23";
-const ATTENTION_BG   = "FFFBEB"; // very light amber for attention rows
+const ATTENTION_BG   = "FFFBEB"; // amber tint — unresolved items needing action
+const RESOLVED_BG    = "EEF2FF"; // indigo-50 — items user has already addressed
 
 const S = {
-  // "About this report" title
   reportTitle: {
     font: { bold: true, sz: 14, color: { rgb: BLACK } },
     fill: { fgColor: { rgb: "FFFFFF" } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Key–value label in the about block
   kvLabel: {
     font: { bold: false, sz: 10, color: { rgb: MUTED_INK } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Key–value value in the about block
   kvValue: {
     font: { bold: true, sz: 10, color: { rgb: BLACK } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Verdict: reconciled
   verdictGood: {
     font: { bold: true, sz: 11, color: { rgb: GREEN_INK } },
     fill: { fgColor: { rgb: GREEN_BG } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Verdict: not reconciled
   verdictWarn: {
     font: { bold: true, sz: 11, color: { rgb: AMBER_INK } },
     fill: { fgColor: { rgb: AMBER_BG } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Disclaimer text
   disclaimer: {
     font: { sz: 9, italic: true, color: { rgb: MUTED_INK } },
     alignment: { horizontal: "left" as const, wrapText: true },
   } satisfies CellStyle,
 
-  // Section divider heading (grey background)
   sectionHead: {
     font: { bold: true, sz: 10, color: { rgb: BLACK } },
     fill: { fgColor: { rgb: GREY_HEADER_BG } },
@@ -172,14 +199,19 @@ const S = {
     },
   } satisfies CellStyle,
 
-  // Sub-group label (e.g., "On your bank statement but not in your records")
   subHead: {
     font: { bold: true, sz: 9, color: { rgb: MUTED_INK } },
     fill: { fgColor: { rgb: GREY_HEADER_BG } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Column header row
+  // Sub-heading for resolved items — indigo tint
+  subHeadResolved: {
+    font: { bold: true, sz: 9, color: { rgb: "3730A3" } },
+    fill: { fgColor: { rgb: "E0E7FF" } },
+    alignment: { horizontal: "left" as const },
+  } satisfies CellStyle,
+
   colHeader: {
     font: { bold: true, sz: 9, color: { rgb: MUTED_INK } },
     fill: { fgColor: { rgb: "F8F8FC" } },
@@ -188,19 +220,17 @@ const S = {
     },
   } satisfies CellStyle,
 
-  // Regular data cell
   data: {
     font: { sz: 9.5, color: { rgb: BLACK } },
     alignment: { horizontal: "left" as const },
   } satisfies CellStyle,
 
-  // Amount (right-aligned)
   amount: {
     font: { sz: 9.5, color: { rgb: BLACK } },
     alignment: { horizontal: "right" as const },
   } satisfies CellStyle,
 
-  // Attention item row (very lightly tinted)
+  // Unresolved attention row
   attentionData: {
     font: { sz: 9.5, color: { rgb: BLACK } },
     fill: { fgColor: { rgb: ATTENTION_BG } },
@@ -211,6 +241,26 @@ const S = {
     font: { sz: 9.5, color: { rgb: AMBER_INK } },
     fill: { fgColor: { rgb: ATTENTION_BG } },
     alignment: { horizontal: "right" as const },
+  } satisfies CellStyle,
+
+  // Resolved row — indigo tint, neutral
+  resolvedData: {
+    font: { sz: 9.5, color: { rgb: BLACK } },
+    fill: { fgColor: { rgb: RESOLVED_BG } },
+    alignment: { horizontal: "left" as const },
+  } satisfies CellStyle,
+
+  resolvedAmount: {
+    font: { sz: 9.5, color: { rgb: "3730A3" } },
+    fill: { fgColor: { rgb: RESOLVED_BG } },
+    alignment: { horizontal: "right" as const },
+  } satisfies CellStyle,
+
+  // Inline note (italic, muted, light bg)
+  note: {
+    font: { sz: 9, italic: true, color: { rgb: MUTED_INK } },
+    fill: { fgColor: { rgb: RESOLVED_BG } },
+    alignment: { horizontal: "left" as const, wrapText: true },
   } satisfies CellStyle,
 };
 
@@ -240,16 +290,20 @@ export async function downloadExcelWorksheet(
   const wb = XLSX.utils.book_new();
   const wsData: XlsxCell[][] = [];
 
-  // Helper: push a row of cells
   const row = (...cells: XlsxCell[]) => wsData.push(cells);
 
-  // Track merge ranges
   const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
   const merge = (r: number, c1: number, c2: number) =>
     merges.push({ s: { r, c: c1 }, e: { r, c: c2 } });
 
-  const { acceptedPairs, missingFromBooks, missingFromBank, reviewPairs } =
-    deriveBuckets(ctx);
+  const {
+    acceptedPairs,
+    reviewPairs,
+    missingFromBooks,
+    addedToReconciliation,
+    missingFromBank,
+    acknowledgedBank,
+  } = deriveBuckets(ctx);
 
   const periodLabel = formatPeriod(ctx.periodStart, ctx.periodEnd);
   const verdictText = ctx.reconciled
@@ -257,33 +311,29 @@ export async function downloadExcelWorksheet(
     : `Your records and your bank differ by ${dollars(Math.abs(ctx.unexplainedDifference))} for this period.`;
   const verdictStyle = ctx.reconciled ? S.verdictGood : S.verdictWarn;
 
-  // Total columns used: A–F (indices 0–5)
   const COLS = 6;
-  const lastCol = COLS - 1; // 5
+  const lastCol = COLS - 1;
 
   // ================================================================
   // ABOUT THIS REPORT block
   // ================================================================
-  let r = 0; // current row index (0-based for merges; 1-based in Excel)
+  let r = 0;
 
-  // Title row
   row(cell("About this report", S.reportTitle), ...Array(COLS - 1).fill(blank()));
   merge(r, 0, lastCol);
   r++;
 
-  // Blank spacer
   row(...Array(COLS).fill(blank()));
   r++;
 
-  // Key–value rows
-  const kvRows = [
+  const kvRows: [string, string][] = [
     ["Account", ctx.accountName],
     ["Period", periodLabel],
   ];
   if (ctx.openingBalance !== null) kvRows.push(["Opening balance", dollars(ctx.openingBalance)]);
   if (ctx.closingBalance !== null) kvRows.push(["Closing balance (bank)", dollars(ctx.closingBalance)]);
   kvRows.push([
-    ctx.reconciled ? "Unexplained difference" : "Unexplained difference",
+    "Unexplained difference",
     ctx.reconciled ? "$0.00" : dollars(Math.abs(ctx.unexplainedDifference)),
   ]);
 
@@ -296,20 +346,16 @@ export async function downloadExcelWorksheet(
     r++;
   }
 
-  // Blank spacer
   row(...Array(COLS).fill(blank()));
   r++;
 
-  // Verdict banner (spans all columns)
   row(cell(verdictText, verdictStyle), ...Array(COLS - 1).fill(blank(verdictStyle)));
   merge(r, 0, lastCol);
   r++;
 
-  // Blank spacer
   row(...Array(COLS).fill(blank()));
   r++;
 
-  // Disclaimer (spans all columns, wraps)
   const disclaimerText =
     "Reconly helps you check whether your records match your bank. " +
     "It is not accounting or tax advice. " +
@@ -318,7 +364,6 @@ export async function downloadExcelWorksheet(
   merge(r, 0, lastCol);
   r++;
 
-  // Blank spacer
   row(...Array(COLS).fill(blank()));
   r++;
 
@@ -336,7 +381,6 @@ export async function downloadExcelWorksheet(
     row(cell("No matched transactions yet.", S.data), ...Array(COLS - 1).fill(blank()));
     r++;
   } else {
-    // Column headers: bank side + ledger side
     row(
       cell("Bank date",          S.colHeader),
       cell("Bank description",   S.colHeader),
@@ -367,6 +411,9 @@ export async function downloadExcelWorksheet(
   // NEEDS YOUR ATTENTION
   // ================================================================
   const totalAttention = missingFromBooks.length + missingFromBank.length + reviewPairs.length;
+  const totalResolved = addedToReconciliation.length + acknowledgedBank.length;
+  const totalSection = totalAttention + totalResolved;
+
   row(
     cell(`Needs your attention  (${totalAttention} item${totalAttention !== 1 ? "s" : ""})`, S.sectionHead),
     ...Array(COLS - 1).fill(blank(S.sectionHead))
@@ -374,7 +421,7 @@ export async function downloadExcelWorksheet(
   merge(r, 0, lastCol);
   r++;
 
-  // ---- Sub-group: on bank, not in books ----
+  // ---- Sub-group: on bank, not in records (unresolved) ----
   row(
     cell("On your bank statement but not in your records", S.subHead),
     ...Array(COLS - 1).fill(blank(S.subHead))
@@ -411,7 +458,52 @@ export async function downloadExcelWorksheet(
   row(...Array(COLS).fill(blank()));
   r++;
 
-  // ---- Sub-group: in books, not cleared ----
+  // ---- Sub-group: added to reconciliation (resolved — to be recorded) ----
+  if (addedToReconciliation.length > 0) {
+    row(
+      cell(
+        `Added to your reconciliation — to be recorded in your books  (${addedToReconciliation.length})`,
+        S.subHeadResolved
+      ),
+      ...Array(COLS - 1).fill(blank(S.subHeadResolved))
+    );
+    merge(r, 0, lastCol);
+    r++;
+
+    // Inline note
+    const noteText =
+      "These bank transactions are included in this reconciliation so your report is complete. " +
+      "You or your accountant will need to record them in your books.";
+    row(cell(noteText, S.note), ...Array(COLS - 1).fill(blank(S.note)));
+    merge(r, 0, lastCol);
+    r++;
+
+    row(
+      cell("Date",        S.colHeader),
+      cell("Description", S.colHeader),
+      cell("Amount",      S.colHeader),
+      blank(),
+      blank(),
+      blank(),
+    );
+    r++;
+    for (const entry of addedToReconciliation) {
+      row(
+        cell(shortDate(entry.date),      S.resolvedData),
+        cell(entry.description,          S.resolvedData),
+        numCell(dollars(entry.amount),   S.resolvedAmount),
+        blank(),
+        blank(),
+        blank(),
+      );
+      r++;
+    }
+
+    row(...Array(COLS).fill(blank()));
+    r++;
+  }
+
+  // ---- Sub-group: in records, not cleared (unresolved) ----
   row(
     cell("In your records but not yet cleared by your bank", S.subHead),
     ...Array(COLS - 1).fill(blank(S.subHead))
@@ -447,6 +539,50 @@ export async function downloadExcelWorksheet(
 
   row(...Array(COLS).fill(blank()));
   r++;
+
+  // ---- Sub-group: marked as outstanding (resolved — timing only) ----
+  if (acknowledgedBank.length > 0) {
+    row(
+      cell(
+        `Marked as outstanding — known timing difference  (${acknowledgedBank.length})`,
+        S.subHeadResolved
+      ),
+      ...Array(COLS - 1).fill(blank(S.subHeadResolved))
+    );
+    merge(r, 0, lastCol);
+    r++;
+
+    const noteText =
+      "These are in your records but your bank hasn't processed them yet. " +
+      "This is a normal timing difference — no action needed.";
+    row(cell(noteText, S.note), ...Array(COLS - 1).fill(blank(S.note)));
+    merge(r, 0, lastCol);
+    r++;
+
+    row(
+      cell("Date",        S.colHeader),
+      cell("Description", S.colHeader),
+      cell("Amount",      S.colHeader),
+      blank(),
+      blank(),
+      blank(),
+    );
+    r++;
+    for (const txn of acknowledgedBank) {
+      row(
+        cell(shortDate(txn.date),      S.resolvedData),
+        cell(txn.description,          S.resolvedData),
+        numCell(dollars(txn.amount),   S.resolvedAmount),
+        blank(),
+        blank(),
+        blank(),
+      );
+      r++;
+    }
+
+    row(...Array(COLS).fill(blank()));
+    r++;
+  }
 
   // ---- Sub-group: review items (possible matches) ----
   if (reviewPairs.length > 0) {
@@ -486,13 +622,14 @@ export async function downloadExcelWorksheet(
     r++;
   }
 
+  // unused — suppress lint warning
+  void totalSection;
+
   // ================================================================
-  // Build the worksheet from the cell array
+  // Build the worksheet
   // ================================================================
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-  // Apply styles (xlsx-js-style reads them off the cell objects we set)
-  // aoa_to_sheet builds cells as { v, t } — we need to merge our style in
   for (let ri = 0; ri < wsData.length; ri++) {
     for (let ci = 0; ci < wsData[ri].length; ci++) {
       const src = wsData[ri][ci];
@@ -504,10 +641,8 @@ export async function downloadExcelWorksheet(
     }
   }
 
-  // Merges
   ws["!merges"] = merges;
 
-  // Column widths (characters)
   ws["!cols"] = [
     { wch: 14 }, // A  date
     { wch: 38 }, // B  description
@@ -517,7 +652,6 @@ export async function downloadExcelWorksheet(
     { wch: 38 }, // F  note / books amount
   ];
 
-  // Freeze top rows: freeze below row 1 (the "About" title)
   ws["!freeze"] = { xSplit: 0, ySplit: 1 };
 
   XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");

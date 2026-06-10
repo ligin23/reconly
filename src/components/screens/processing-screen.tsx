@@ -3,14 +3,41 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 
+export type ReconCounts = {
+  totalTxns: number;
+  autoMatched: number;
+  differences: number;
+};
+
 const PROC_STEPS = [
-  { key: "read", label: "Reading your files", done: "Read 268 transactions" },
-  { key: "match", label: "Matching transactions", done: "124 matched automatically" },
-  { key: "diff", label: "Finding what's different", done: "14 differences found" },
-  { key: "done", label: "Putting it together", done: "Ready to review" },
+  { key: "read", label: "Reading your files" },
+  { key: "match", label: "Matching transactions" },
+  { key: "diff", label: "Finding what's different" },
+  { key: "done", label: "Putting it together" },
 ] as const;
 
-export function ProcessingScreen({ onComplete }: { onComplete: () => void }) {
+function stepDoneText(key: string, counts: ReconCounts | null): string {
+  switch (key) {
+    case "read":
+      return counts ? `Read ${counts.totalTxns} transactions` : "Files read";
+    case "match":
+      return counts ? `${counts.autoMatched} matched automatically` : "Transactions matched";
+    case "diff":
+      if (!counts) return "Differences found";
+      return counts.differences === 1 ? "1 difference found" : `${counts.differences} differences found`;
+    case "done":
+      return "Ready to review";
+  }
+  return "Done";
+}
+
+export function ProcessingScreen({
+  onComplete,
+  counts,
+}: {
+  onComplete: () => void;
+  counts: ReconCounts | null;
+}) {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
@@ -147,7 +174,7 @@ export function ProcessingScreen({ onComplete }: { onComplete: () => void }) {
                         animation: "rcFade .3s ease",
                       }}
                     >
-                      {s.done}
+                      {stepDoneText(s.key, counts)}
                     </div>
                   )}
                 </div>
