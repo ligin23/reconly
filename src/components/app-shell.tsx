@@ -31,6 +31,8 @@ import type { ReconciliationRecord } from "@/lib/data/repository";
 import { generateId, inferPeriod, formatPeriod, deriveStatus } from "@/lib/data/utils";
 import { downloadPdfReport } from "@/lib/export/pdf-report";
 import { downloadExcelWorksheet } from "@/lib/export/excel-worksheet";
+import { CopilotPanel } from "@/components/copilot-panel";
+import { buildReconContext } from "@/lib/copilot/context-builder";
 
 type Screen = "upload" | "mapping" | "processing" | "dashboard" | "review" | "history";
 
@@ -730,6 +732,11 @@ export function AppShell() {
 
   const [engineOutput, setEngineOutput] = useState<EngineOutput | null>(null);
 
+  // Bumped whenever a different reconciliation is loaded (fresh run or
+  // history open). Keys the copilot panel so its conversation — which is
+  // in-memory only — never carries over between reconciliations.
+  const [copilotRunId, setCopilotRunId] = useState(0);
+
   const [inspections, setInspections] = useState<{
     bank: CsvInspection;
     ledger: CsvInspection;
@@ -972,6 +979,7 @@ export function AppShell() {
       baseMissingFromBank: result.missingFromBank,
       balanceProof: result.balanceProof,
     });
+    setCopilotRunId((n) => n + 1);
     setMatches(result.matches);
     setCompositeMatches(result.compositeMatches);
     if (result.compositeMatches.length > 0) {
@@ -1104,6 +1112,7 @@ export function AppShell() {
       baseMissingFromBank: result.missingFromBank,
       balanceProof: result.balanceProof,
     });
+    setCopilotRunId((n) => n + 1);
     setMatches(restoredMatches);
     // Restore saved composite decisions if available; otherwise use fresh engine output.
     const savedComposites = record.compositeMatches ?? [];
@@ -1252,8 +1261,39 @@ export function AppShell() {
     }
   };
 
-  // COPILOT_MOUNT — a chat panel attaching to the in-memory recon result
-  // (matches, engineOutput) would be mounted here in a future phase.
+  // COPILOT_MOUNT — explain-only chat panel over the in-memory recon result.
+  // Context is rebuilt from live state on every question, so the copilot
+  // always reflects the latest accept/reject decisions. The builder masks
+  // descriptions and whitelists fields before anything leaves the browser.
+  const getCopilotContext = useCallback(() => {
+    if (!engineOutput || !liveBalanceProof) return null;
+    return buildReconContext({
+      matches,
+      compositeMatches,
+      bankTxns: engineOutput.bankTxns,
+      ledgerTxns: engineOutput.ledgerTxns,
+      baseMissingFromBooks: engineOutput.baseMissingFromBooks,
+      baseMissingFromBank: engineOutput.baseMissingFromBank,
+      userAddedEntries,
+      acknowledgedBankIds,
+      balanceProof: liveBalanceProof,
+      reconciled,
+      periodLabel,
+    });
+  }, [
+    engineOutput,
+    liveBalanceProof,
+    matches,
+    compositeMatches,
+    userAddedEntries,
+    acknowledgedBankIds,
+    reconciled,
+    periodLabel,
+  ]);
+
+  // Shown only on the results screens (dashboard/review) of an analyzed run.
+  const copilotVisible =
+    analyzed && engineOutput !== null && (screen === "dashboard" || screen === "review");
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
@@ -1369,6 +1409,10 @@ export function AppShell() {
         onSave={handleSaveFromDialog}
         onCancel={() => setSaveDialogOpen(false)}
       />
+
+      {copilotVisible && (
+        <CopilotPanel key={copilotRunId} getContext={getCopilotContext} />
+      )}
     </div>
   );
 }

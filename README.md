@@ -29,6 +29,25 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## AI Copilot — operational requirements
+
+The copilot route (`/api/copilot`) is the only server-side surface in Reconly,
+and the only feature that sends data off-device. Before deploying it:
+
+1. **Set a hard monthly spend limit on the Anthropic API key** in the
+   [Anthropic console](https://console.anthropic.com/) (Settings → Limits).
+   The route has schema validation, origin checks, payload caps, and IP +
+   session rate limits — the spend cap is the backstop if everything else
+   fails. Do not deploy without it.
+2. Set `ANTHROPIC_API_KEY` in Vercel project settings (never commit it;
+   `.env.example` lists the names only).
+3. Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` for distributed
+   rate limiting. Without them the limiter falls back to per-instance memory,
+   which is ineffective on serverless.
+4. Logging: the route logs only timestamps, token counts, latency, and error
+   classes — never the question or transaction data. Keep it that way; Vercel
+   retains logs.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
