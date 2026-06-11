@@ -44,3 +44,9 @@ next-env.d.ts
 # test/demo artifacts
 tmp/
 test-results/
+/test-data/
+/scripts/fuzzy-engine-demo.ts
+/scripts/fuzzy-score-demo.ts
+
+# local tool config
+.claude/
