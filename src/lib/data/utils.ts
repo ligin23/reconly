@@ -35,17 +35,22 @@ export function formatPeriod(start: string, end: string): string {
   return `${startStr} – ${endStr}`;
 }
 
-/** Derive persisted status from engine output and current match decisions. */
+/**
+ * Derive persisted status from current decisions.
+ * "Reconciled" requires a zero difference AND nothing left to resolve —
+ * a zero net with open items (offsetting errors) or pending suggestions
+ * is in-progress work, not a reconciled period.
+ */
 export function deriveStatus(
   unexplainedDifference: number,
   matches: Pick<Match, "status">[],
-  compositeMatches: Pick<AnyCompositeMatch, "status">[] = []
+  compositeMatches: Pick<AnyCompositeMatch, "status">[] = [],
+  openItemCount = 0
 ): ReconciliationRecord["status"] {
-  if (unexplainedDifference === 0) return "reconciled";
-  if (
+  const hasPendingSuggestions =
     matches.some((m) => m.status === "suggested") ||
-    compositeMatches.some((c) => c.status === "suggested")
-  )
-    return "in_progress";
+    compositeMatches.some((c) => c.status === "suggested");
+  if (hasPendingSuggestions) return "in_progress";
+  if (unexplainedDifference === 0 && openItemCount === 0) return "reconciled";
   return "not_reconciled";
 }

@@ -45,6 +45,24 @@ async function loadFixture(page: import("@playwright/test").Page) {
   ).toBeVisible({ timeout: 15_000 });
 }
 
+// Helper: walk the review queue accepting every suggested pair, then return
+// to the dashboard. "Fully reconciled" requires a zero difference AND no
+// pending suggestions — matching the accounting definition, suggestions are
+// unconfirmed until the user reviews them.
+async function acceptAllSuggestions(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: /clear it up/i }).first().click();
+
+  const acceptBtn = page.getByRole("button", { name: /yes, it.?s a match/i });
+  // Each decision animates for ~290ms before the next card renders.
+  while ((await acceptBtn.count()) > 0) {
+    await acceptBtn.first().click();
+    await page.waitForTimeout(400);
+  }
+
+  await page.getByRole("button", { name: /back to results/i }).click();
+  await expect(page.getByTestId("recon-status")).toBeVisible({ timeout: 10_000 });
+}
+
 test.describe("resolve a missing item into the working copy", () => {
   test(
     "add the missing fee → balance updates → export reflects it (framed as 'to record', not 'recorded')",
@@ -54,6 +72,9 @@ test.describe("resolve a missing item into the working copy", () => {
       // ── Verify not reconciled before adding ────────────────────────────
       const statusText = await page.getByTestId("recon-status").innerText();
       expect(statusText.toLowerCase()).toMatch(/unexplained|\$12/i);
+
+      // ── Review the suggested pairs first (reconciled requires it) ─────
+      await acceptAllSuggestions(page);
 
       // ── Navigate to the "Not in your records" tab ─────────────────────
       await page.getByTestId("tab-missing-books").click();
@@ -98,6 +119,9 @@ test.describe("resolve a missing item into the working copy", () => {
 
   test("adding is reversible — remove restores the unreconciled state", async ({ page }) => {
     await loadFixture(page);
+
+    // Review the suggested pairs (reconciled requires no pending suggestions).
+    await acceptAllSuggestions(page);
 
     // Navigate to missing-books tab and add the fee.
     await page.getByTestId("tab-missing-books").click();

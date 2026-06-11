@@ -120,11 +120,14 @@ function StatusHero({
   unexplained,
   balanceProof,
   onReview,
+  reviewLeft = 0,
 }: {
   reconciled: boolean;
   unexplained: number;
   balanceProof?: BalanceProof;
   onReview: () => void;
+  /** Suggested pairs still awaiting a yes/no — blocks "Fully reconciled". */
+  reviewLeft?: number;
 }) {
   if (reconciled) {
     return (
@@ -252,11 +255,19 @@ function StatusHero({
                 color: "var(--ink)",
               }}
             >
-              {money(unexplained)}{" "}
-              <span style={{ color: "var(--warn-ink)" }}>unexplained</span>
+              {unexplained === 0 && reviewLeft > 0 ? (
+                <span style={{ color: "var(--warn-ink)" }}>Almost there</span>
+              ) : (
+                <>
+                  {money(unexplained)}{" "}
+                  <span style={{ color: "var(--warn-ink)" }}>unexplained</span>
+                </>
+              )}
             </div>
             <div style={{ fontSize: 14.5, color: "var(--ink-2)", marginTop: 5 }}>
-              A gap this size usually means one missing entry.
+              {unexplained === 0 && reviewLeft > 0
+                ? `The totals line up — ${reviewLeft} suggested ${reviewLeft === 1 ? "pair needs" : "pairs need"} your confirmation.`
+                : "A gap this size usually means one missing entry."}
             </div>
           </div>
         </div>
@@ -614,6 +625,7 @@ export function DashboardScreen({
         unexplained={unexplained}
         balanceProof={balanceProof}
         onReview={onOpenReview}
+        reviewLeft={reviewLeft}
       />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>

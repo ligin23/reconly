@@ -259,9 +259,11 @@ type UploadScreenProps = {
   /** Load the built-in sample CSV pair. */
   onSample: () => void;
   onStart: () => void;
+  /** Rejected/failed file message (wrong type, too large, read error). */
+  errorMessage?: string | null;
 };
 
-export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onStart }: UploadScreenProps) {
+export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onStart, errorMessage }: UploadScreenProps) {
   const ready = Boolean(files.bank && files.ledger);
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "12px 8px 40px" }}>
@@ -294,6 +296,27 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
           accounting know-how needed.
         </p>
       </div>
+
+      {errorMessage && (
+        <div
+          data-testid="upload-error"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "10px 14px",
+            marginBottom: 16,
+            fontSize: 13,
+            color: "var(--bad-ink, #b3261e)",
+            background: "var(--bad-soft, #fdecea)",
+            border: "1px solid var(--bad, #e7b3ae)",
+            borderRadius: "var(--r-md, 10px)",
+          }}
+        >
+          <Icon name="alert" size={15} />
+          {errorMessage}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <UploadCard

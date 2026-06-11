@@ -38,7 +38,7 @@ export type BalanceProof = {
   bankNetChange: number;       // signed cents: sum of all bank txn amounts
   ledgerNetChange: number;     // signed cents: sum of all ledger txn amounts
   clearedSum: number;          // signed cents: sum of accepted-match bank amounts
-  unexplainedDifference: number; // bankNetChange − ledgerNetChange; 0 = reconciled
+  unexplainedDifference: number; // bankNetChange − ledgerNetChange (a zero net alone does NOT mean reconciled)
 };
 
 /** Full output of one reconciliation run. */
@@ -50,7 +50,7 @@ export type ReconResult = {
   missingFromBooks: Txn[]; // unmatched bank txns — on the statement, not in ledger
   missingFromBank: Txn[];  // unmatched ledger txns — in ledger, not yet on statement
   balanceProof: BalanceProof;
-  reconciled: boolean;     // true ONLY when unexplainedDifference === 0
+  reconciled: boolean;     // true ONLY when unexplainedDifference === 0 AND both missing buckets are empty
 };
 
 /**

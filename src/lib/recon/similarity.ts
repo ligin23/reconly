@@ -34,8 +34,11 @@ function trigrams(s: string): Set<string> {
 /**
  * Similarity score between two already-normalized description strings.
  * Returns a value in [0, 1].  Fully deterministic — same inputs, same output.
+ * Blank descriptions carry no evidence: empty vs empty is 0, not 1 —
+ * "we know nothing about either" must never read as "they're identical".
  */
 export function descriptionSimilarity(normA: string, normB: string): number {
+  if (normA === "" || normB === "") return 0;
   const tokenScore = jaccard(tokens(normA), tokens(normB));
   const trigramScore = jaccard(trigrams(normA), trigrams(normB));
   return Math.max(tokenScore, trigramScore);

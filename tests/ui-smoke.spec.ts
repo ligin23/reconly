@@ -91,7 +91,18 @@ test.describe("critical path: upload → verdict → export", () => {
     await page.getByTestId("ledger-file-input").setInputFiles(fixture("clean_ledger.csv"));
     await page.getByTestId("start-analysis-btn").click();
     await page.getByTestId("confirm-mapping-btn").click();
-    await expect(page.getByText(/reconciled|records match/i).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("recon-status")).toBeVisible({ timeout: 15000 });
+
+    // "Fully reconciled" requires the suggested pairs to be reviewed — a
+    // zero difference with pending suggestions is in-progress, not done.
+    await page.getByRole("button", { name: /clear it up/i }).first().click();
+    const acceptBtn = page.getByRole("button", { name: /yes, it.?s a match/i });
+    while ((await acceptBtn.count()) > 0) {
+      await acceptBtn.first().click();
+      await page.waitForTimeout(400); // decision animation (~290ms)
+    }
+    await page.getByRole("button", { name: /back to results/i }).click();
+    await expect(page.getByText(/fully reconciled|records match/i).first()).toBeVisible({ timeout: 15000 });
 
     // --- Save the reconciliation via the Save dialog ---
     await page.getByTestId("save-btn").click();

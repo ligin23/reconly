@@ -46,10 +46,37 @@ function draftToMap(d: DraftMap): CsvColumnMap {
   return base;
 }
 
-function isDraftValid(d: DraftMap): boolean {
-  if (!d.date || !d.description) return false;
-  if (d.amountMode === "single") return Boolean(d.amount);
-  return Boolean(d.debit || d.credit);
+/**
+ * Validate a draft against the file's actual headers.
+ * Returns null when valid, otherwise a user-facing reason. Non-empty draft
+ * strings alone are NOT enough: auto-detection falls back to literal column
+ * names ("date"/"amount") that may not exist in this file, and a mapping
+ * pointing at a missing column silently parses zero rows.
+ */
+function draftProblem(d: DraftMap, headers: string[]): string | null {
+  const required =
+    d.amountMode === "single"
+      ? [d.date, d.description, d.amount]
+      : [d.date, d.description];
+  if (required.some((c) => !c)) return "Pick a column for every required field";
+  if (d.amountMode === "split" && !d.debit && !d.credit)
+    return "Pick a debit and/or credit column";
+
+  const used = [
+    d.date,
+    d.description,
+    ...(d.amountMode === "single" ? [d.amount] : [d.debit, d.credit]),
+    d.reference,
+  ].filter(Boolean);
+
+  const have = new Set(headers);
+  const missing = used.find((c) => !have.has(c));
+  if (missing) return `Column "${missing}" isn't in this file — pick one from the list`;
+
+  if (new Set(used).size !== used.length)
+    return "Each column can only be used for one field";
+
+  return null;
 }
 
 // ---- Small native <select> styled to match the app -------------------
@@ -351,13 +378,22 @@ export type MappingScreenProps = {
   ledger: CsvInspection;
   onBack: () => void;
   onConfirm: (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => void;
+  /** Parse failure from the previous confirm attempt (e.g. zero rows parsed). */
+  errorMessage?: string | null;
 };
 
-export function MappingScreen({ bank, ledger, onBack, onConfirm }: MappingScreenProps) {
+export function MappingScreen({ bank, ledger, onBack, onConfirm, errorMessage }: MappingScreenProps) {
   const [bankDraft, setBankDraft] = useState<DraftMap>(() => detectedToDraft(bank.detected));
   const [ledgerDraft, setLedgerDraft] = useState<DraftMap>(() => detectedToDraft(ledger.detected));
 
-  const ready = isDraftValid(bankDraft) && isDraftValid(ledgerDraft);
+  const bankProblem = draftProblem(bankDraft, bank.headers);
+  const ledgerProblem = draftProblem(ledgerDraft, ledger.headers);
+  const problem = bankProblem
+    ? `Bank statement: ${bankProblem}`
+    : ledgerProblem
+      ? `Ledger: ${ledgerProblem}`
+      : null;
+  const ready = problem === null;
 
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", padding: "12px 8px 40px" }}>
@@ -410,8 +446,16 @@ export function MappingScreen({ bank, ledger, onBack, onConfirm }: MappingScreen
         </Button>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           {!ready && (
-            <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
-              Pick a column for every required field
+            <span style={{ fontSize: 12.5, color: "var(--ink-3)" }} data-testid="mapping-problem">
+              {problem}
+            </span>
+          )}
+          {ready && errorMessage && (
+            <span
+              style={{ fontSize: 12.5, color: "var(--bad, #b3261e)", maxWidth: 380 }}
+              data-testid="mapping-error"
+            >
+              {errorMessage}
             </span>
           )}
           <Button

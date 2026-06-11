@@ -79,11 +79,13 @@ function runReconcile(bankCsv: string, ledgerCsv: string): { state: TestState; v
 
 /** Map engine state into NormalizedResult (amounts converted to dollars). */
 function normalize(state: TestState): NormalizedResult {
-  // Replicate AppShell liveBalanceProof math (all in cents internally)
+  // Replicate AppShell liveBalanceProof math (all in cents internally).
+  // SIGNED adjustment: each added entry will be recorded in the books,
+  // raising the ledger net by its signed amount. Never absolute values,
+  // never clamped — abs/clamp math hid growing gaps and faked $0 on overshoot.
   const engineGap = state.engineResult.balanceProof.unexplainedDifference; // signed cents
-  const addedAbsSum = state.userAddedEntries.reduce((s, e) => s + Math.abs(e.amount), 0); // cents
-  const gapSign = engineGap < 0 ? -1 : 1;
-  const newUnexplained = gapSign * Math.max(0, Math.abs(engineGap) - addedAbsSum); // cents
+  const addedSum = state.userAddedEntries.reduce((s, e) => s + e.amount, 0); // signed cents
+  const newUnexplained = engineGap - addedSum; // cents
 
   // addedTxnIds: entries the user has added — split missingFromBooks accordingly
   const addedTxnIds = new Set(state.userAddedEntries.map((e) => e.txnId));
@@ -99,9 +101,19 @@ function normalize(state: TestState): NormalizedResult {
     amount: e.amount / 100, // cents → dollars
   }));
 
+  // Matches AppShell: reconciled requires a zero difference AND nothing left
+  // to resolve (open missing items, pending suggestions).
+  const pendingReview =
+    state.engineResult.matches.filter((m) => m.status === "suggested").length +
+    state.engineResult.compositeMatches.filter((c) => c.status === "suggested").length;
+
   return {
     unexplainedDifference: newUnexplained / 100, // cents → dollars
-    isReconciled: Math.abs(newUnexplained) < 1,  // <1 cent = reconciled (matches AppShell)
+    isReconciled:
+      newUnexplained === 0 &&
+      missingFromBooks.length === 0 &&
+      missingFromBank.length === 0 &&
+      pendingReview === 0,
     missingFromBooks,
     missingFromBank,
     matchedCount: state.engineResult.matches.filter((m) => m.status === "accepted").length,
@@ -136,6 +148,23 @@ function removeItem(state: TestState, item: any): TestState {
   };
 }
 
+/** Simulate the user accepting every suggestion in Review (immutable).
+ *  "Reconciled" requires no pending suggestions, mirroring the app. */
+function acceptAllSuggestions(state: TestState): TestState {
+  return {
+    ...state,
+    engineResult: {
+      ...state.engineResult,
+      matches: state.engineResult.matches.map((m) =>
+        m.status === "suggested" ? { ...m, status: "accepted" as const } : m
+      ),
+      compositeMatches: state.engineResult.compositeMatches.map((c) =>
+        c.status === "suggested" ? ({ ...c, status: "accepted" as const } as typeof c) : c
+      ),
+    },
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("baseline: the fixture has exactly one discrepancy (a $12 fee)", () => {
@@ -156,10 +185,19 @@ describe("adding a missing item balances the reconciliation", () => {
       Math.abs(Number(t.amount ?? t.Amount)) === 12.0);
     expect(fee).toBeDefined();
 
-    const after = normalize(addItem(state, fee));
+    // Real flow: the user reviews the suggested pairs AND adds the fee.
+    // Reconciled requires both — a zero difference with suggestions still
+    // pending is in-progress work, not a reconciled period.
+    const after = normalize(addItem(acceptAllSuggestions(state), fee));
     // The $12 was the entire gap -> now zero, now reconciled.
     expect(Math.abs(after.unexplainedDifference)).toBeLessThan(0.001);
     expect(after.isReconciled).toBe(true);
+
+    // Without the review step, the same zero difference must NOT read as
+    // reconciled — pending suggestions are unconfirmed.
+    const withoutReview = normalize(addItem(state, fee));
+    expect(Math.abs(withoutReview.unexplainedDifference)).toBeLessThan(0.001);
+    expect(withoutReview.isReconciled).toBe(false);
   });
 
   it("the added item is TAGGED as user-added (not confused with imported rows)", () => {

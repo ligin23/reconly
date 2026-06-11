@@ -47,11 +47,23 @@ function originAllowed(request: Request): boolean {
   }
 }
 
-/** Client IP for rate limiting. On Vercel, x-forwarded-for is set by the platform. */
+/**
+ * Client IP for rate limiting — must come from a TRUSTED source.
+ * Never the leftmost x-forwarded-for entry: that's client-supplied, and
+ * rotating it would mint a fresh rate-limit bucket per request. Platforms
+ * (Vercel, most reverse proxies) overwrite x-real-ip and APPEND the real
+ * connecting IP to x-forwarded-for, so trust x-real-ip first, then the
+ * RIGHTMOST forwarded entry.
+ */
 function clientIp(request: Request): string {
+  const real = request.headers.get("x-real-ip");
+  if (real?.trim()) return real.trim();
   const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return request.headers.get("x-real-ip") ?? "unknown";
+  if (fwd) {
+    const parts = fwd.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1];
+  }
+  return "unknown";
 }
 
 /** Strip control characters — defense in depth on top of the client-side
@@ -162,7 +174,14 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // -- Wall 2: size cap (header first, then actual bytes) --
-  const declaredLength = Number(request.headers.get("content-length") ?? 0);
+  // Require a believable content-length BEFORE buffering: browsers always
+  // send it for fetch() with a string body, and without this check a client
+  // omitting the header forces the full body into memory before rejection.
+  const declaredHeader = request.headers.get("content-length");
+  const declaredLength = Number(declaredHeader);
+  if (!declaredHeader || !Number.isFinite(declaredLength) || declaredLength <= 0) {
+    return errorResponse(411, "Invalid request.");
+  }
   if (declaredLength > MAX_BODY_BYTES) {
     return errorResponse(413, "That reconciliation is too large to send in one question.");
   }

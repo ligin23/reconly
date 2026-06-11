@@ -68,6 +68,15 @@ export const COMPOSITE_MAX_GROUP = 4;
 /** Fixed confidence for composite suggestions (exact sum, but which items are uncertain). */
 const COMPOSITE_CONFIDENCE = 85;
 
+/**
+ * Maximum candidate pool per composite target. The subset-sum search
+ * enumerates C(n,2)+C(n,3)+C(n,4) combinations; without a cap, a busy
+ * window (200 candidates ≈ 65M combinations) freezes the browser. When the
+ * pool exceeds the cap, the candidates closest by date are kept —
+ * deterministic, and the most likely true components anyway.
+ */
+export const COMPOSITE_MAX_CANDIDATES = 20;
+
 // ---- Internal helpers ------------------------------------------------
 
 function dateDiffDays(isoA: string, isoB: string): number {
@@ -297,11 +306,32 @@ export function findCompositeMatches(
 
   for (const one of oneSideTxns) {
     // Constraints: same sign + within date window
-    const candidates = sortedMany.filter(
+    let candidates = sortedMany.filter(
       (m) =>
         hasSameSignAs(m.amount, one.amount) &&
         dateDiffDays(m.date, one.date) <= COMPOSITE_DATE_WINDOW
     );
+
+    // Bound the subset-sum search (see COMPOSITE_MAX_CANDIDATES). Keep the
+    // date-closest candidates, then restore (date, id) order for stable
+    // combination enumeration.
+    if (candidates.length > COMPOSITE_MAX_CANDIDATES) {
+      candidates = [...candidates]
+        .sort((a, b) => {
+          const da = dateDiffDays(a.date, one.date);
+          const db = dateDiffDays(b.date, one.date);
+          if (da !== db) return da - db;
+          return a.date !== b.date
+            ? a.date.localeCompare(b.date)
+            : a.id.localeCompare(b.id);
+        })
+        .slice(0, COMPOSITE_MAX_CANDIDATES)
+        .sort((a, b) =>
+          a.date !== b.date
+            ? a.date.localeCompare(b.date)
+            : a.id.localeCompare(b.id)
+        );
+    }
 
     const validCombos: string[][] = [];
 
@@ -396,7 +426,9 @@ export function findCompositeMatches(
  *
  * Assignment is one-to-one, resolved greedily highest-confidence-first.
  * Balance proof: unexplainedDifference = bankNetChange − ledgerNetChange.
- *   A high match % with a nonzero unexplainedDifference is NOT reconciled.
+ *   A high match % with a nonzero unexplainedDifference is NOT reconciled —
+ *   and a zero net alone isn't either: reconciled additionally requires both
+ *   missing buckets to be empty (offsetting errors must not read as clean).
  */
 export function reconcile(
   bankTxns: Txn[],
@@ -422,7 +454,11 @@ export function reconcile(
       const normBank = normalize(bank.description);
       const normLedger = normalize(ledger.description);
 
-      if (dateDiff === 0 && normBank === normLedger) {
+      // A description that normalizes to "" carries zero evidence — it must
+      // never auto-accept as exact ("" === "" is not a match, it's two
+      // unknowns). Such pairs can still surface via the tight ≤1-day near
+      // window below, but only as a reviewable suggestion.
+      if (dateDiff === 0 && normBank === normLedger && normBank !== "") {
         // Exact match
         candidates.push({
           bankId: bank.id,
@@ -592,12 +628,22 @@ export function reconcile(
     unexplainedDifference,
   };
 
+  // "Reconciled" means every item is explained, not merely that the nets
+  // agree: equal-and-opposite unmatched items (a missing $50 fee plus a
+  // missing $50 deposit) cancel in the net but are NOT reconciled. This is
+  // the first-pass engine verdict; pending-suggestion awareness lives in
+  // deriveStatus and the live UI status, which track user decisions.
+  const reconciled =
+    unexplainedDifference === 0 &&
+    missingFromBooks.length === 0 &&
+    missingFromBank.length === 0;
+
   return {
     matches,
     compositeMatches,
     missingFromBooks,
     missingFromBank,
     balanceProof,
-    reconciled: unexplainedDifference === 0,
+    reconciled,
   };
 }

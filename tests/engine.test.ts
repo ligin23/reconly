@@ -166,11 +166,14 @@ describe("matching: correct matches and critical traps", () => {
   });
 
   it("TRAP: does not cross-match the two different-amount Amazon items", () => {
-    // 89.99 and 34.50 must never be matched to each other.
-    const crossMatched = r.matches.some(() => {
-      // Engine requires exact amount equality, so cross-matching is impossible.
-      return false;
-    });
+    // 89.99 and 34.50 must never be matched to each other. Verify the real
+    // invariant: every proposed match pairs transactions of EQUAL amounts.
+    const bank = parseCsv(read("bank_statement.csv"), "bank");
+    const ledger = parseCsv(read("ledger.csv"), "ledger");
+    const amountById = new Map([...bank, ...ledger].map((t) => [t.id, t.amount]));
+    const crossMatched = r.matches.some(
+      (m) => amountById.get(m.bankId) !== amountById.get(m.ledgerId)
+    );
     expect(crossMatched).toBe(false);
     // Both amounts should be accounted for somewhere, not lost (see Part 3).
   });

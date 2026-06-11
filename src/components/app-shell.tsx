@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sampleData, type FileMeta, type MissingTxn, type UserAddedEntry } from "@/lib/sample-data";
-import { parseCsv, inspectCsv, type CsvColumnMap, type CsvInspection } from "@/lib/parser";
+import {
+  parseCsvDetailed,
+  inspectCsv,
+  type CsvColumnMap,
+  type CsvInspection,
+  type ParseResult,
+} from "@/lib/parser";
 import { reconcile } from "@/lib/recon";
 import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
 import type {
@@ -754,6 +760,14 @@ export function AppShell() {
   // "Sample workspace" disclaimer so it never shows over real uploads.
   const [usingSampleData, setUsingSampleData] = useState(false);
 
+  // Rejected/failed file pick (wrong type, too large, read failure).
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Parse failure on the mapping screen (e.g. the mapping yields zero rows).
+  const [mappingError, setMappingError] = useState<string | null>(null);
+  // Non-fatal parse diagnostics (skipped rows, format warnings) carried to
+  // the dashboard — silently dropping rows is never acceptable here.
+  const [parseNotices, setParseNotices] = useState<string[]>([]);
+
   // Current-month label ("June 2026") for fresh sessions with no data yet.
   // Set in an effect so the statically prerendered HTML (built at a possibly
   // different time) never mismatches on hydration.
@@ -822,12 +836,13 @@ export function AppShell() {
         const t = engineOutput.bankTxns.find((b) => b.id === c.bankTxnId);
         return s + (t?.amount ?? 0);
       }, 0);
-    // Each user-added entry explains part of the gap. Use absolute amounts so
-    // adding any missing item (inflow or outflow) always shrinks the stated gap.
-    const addedAbsSum = userAddedEntries.reduce((s, e) => s + Math.abs(e.amount), 0);
+    // Each user-added entry will be recorded in the books, raising the ledger
+    // net by its SIGNED amount: unexplained = bankNet − (ledgerNet + added).
+    // Signed, never clamped — absolute-value math showed the gap shrinking
+    // when it actually grew, and clamping faked a $0 on overshoot.
+    const addedSum = userAddedEntries.reduce((s, e) => s + e.amount, 0);
     const engineGap = engineOutput.balanceProof.unexplainedDifference;
-    const gapSign = engineGap < 0 ? -1 : 1;
-    const newUnexplained = gapSign * Math.max(0, Math.abs(engineGap) - addedAbsSum);
+    const newUnexplained = engineGap - addedSum;
     return {
       ...engineOutput.balanceProof,
       clearedSum: oneToOneCleared + compositeCleared,
@@ -835,8 +850,18 @@ export function AppShell() {
     };
   }, [matches, compositeMatches, userAddedEntries, engineOutput]);
 
+  // Open items the user still has to deal with: unresolved missing items
+  // plus suggestions awaiting review. "Reconciled" requires a zero difference
+  // AND none of these — offsetting unmatched items netting to zero is not a
+  // reconciled period.
+  const openItemCount = dashboardData
+    ? dashboardData.counts.missingFromBooks +
+      dashboardData.counts.missingFromBank +
+      dashboardData.counts.review
+    : 0;
+
   const reconciled = liveBalanceProof
-    ? Math.abs(liveBalanceProof.unexplainedDifference) < 1
+    ? liveBalanceProof.unexplainedDifference === 0 && openItemCount === 0
     : false;
 
   const unexplained = liveBalanceProof
@@ -902,8 +927,33 @@ export function AppShell() {
   }, [engineOutput, currentRecord]);
 
   // ---- Upload handlers ------------------------------------------------
+
+  // Whole files are read into memory and parsed synchronously; beyond this
+  // size the tab freezes, so reject early with a clear message instead.
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB
+
   const pickFile = (side: UploadSide, file: File) => {
+    // The picker's accept=".csv" doesn't constrain drag-and-drop — anything
+    // can be dropped, so validate here (the single entry point for both).
+    const csvByName = /\.(csv|txt)$/i.test(file.name);
+    const csvByType =
+      file.type === "" ||
+      ["text/csv", "text/plain", "application/csv", "application/vnd.ms-excel"].includes(file.type);
+    if (!csvByName || !csvByType) {
+      setUploadError(`"${file.name}" doesn't look like a CSV file. Export your data as CSV and try again.`);
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError(
+        `"${file.name}" is ${formatFileSize(file.size)} — too large to process here (limit ${formatFileSize(MAX_UPLOAD_BYTES)}).`
+      );
+      return;
+    }
+    setUploadError(null);
     const reader = new FileReader();
+    reader.onerror = () => {
+      setUploadError(`Couldn't read "${file.name}". Check the file and try again.`);
+    };
     reader.onload = (e) => {
       const content = (e.target?.result as string) ?? "";
       fileContentsRef.current = { ...fileContentsRef.current, [side]: content };
@@ -935,16 +985,73 @@ export function AppShell() {
   const startAnalysis = () => {
     const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
     if (!bankContent || !ledgerContent) return;
+    setMappingError(null);
     setInspections({ bank: inspectCsv(bankContent), ledger: inspectCsv(ledgerContent) });
     setScreen("mapping");
+  };
+
+  /** Zero parsed rows means the mapping or file is wrong — explain why. */
+  const describeParseFailure = (label: string, parsed: ParseResult): string | null => {
+    if (parsed.txns.length > 0) return null;
+    const d = parsed.diagnostics;
+    const detail =
+      d.csvErrors[0] ??
+      d.warnings[0] ??
+      d.issues[0]?.reason ??
+      (d.totalDataRows === 0 ? "the file has no data rows" : "no rows could be read");
+    return `No transactions could be read from the ${label} (${detail}). Check the column mapping and the file.`;
+  };
+
+  /** Non-fatal diagnostics the user must see before trusting the results. */
+  const collectParseNotices = (label: string, parsed: ParseResult): string[] => {
+    const d = parsed.diagnostics;
+    const notices: string[] = [];
+    if (d.issueCount > 0) {
+      const examples = d.issues
+        .slice(0, 3)
+        .map((i) => `line ${i.line}: ${i.reason}`)
+        .join("; ");
+      notices.push(
+        `${label}: ${d.issueCount} row${d.issueCount === 1 ? "" : "s"} skipped (${examples}${d.issueCount > 3 ? "; …" : ""}). These transactions are NOT included.`
+      );
+    }
+    if (d.csvErrors.length > 0) {
+      notices.push(`${label}: file structure problems — ${d.csvErrors[0]}`);
+    }
+    for (const w of d.warnings) notices.push(`${label}: ${w}`);
+    if (d.dateOrder === "day-first") {
+      notices.push(`${label}: dates read as day-first (DD/MM/YYYY).`);
+    }
+    if (d.decimalStyle === "comma") {
+      notices.push(`${label}: amounts read with European decimal commas (1.234,56).`);
+    }
+    return notices;
   };
 
   const confirmMapping = (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => {
     confirmedMapsRef.current = maps;
     const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
     if (bankContent && ledgerContent) {
-      const bankTxns = parseCsv(bankContent, "bank", maps.bank);
-      const ledgerTxns = parseCsv(ledgerContent, "ledger", maps.ledger);
+      const bankParsed = parseCsvDetailed(bankContent, "bank", maps.bank);
+      const ledgerParsed = parseCsvDetailed(ledgerContent, "ledger", maps.ledger);
+
+      // A mapping that yields zero transactions must never flow into the
+      // engine — reconcile([], []) reports "fully reconciled" over nothing.
+      const failure =
+        describeParseFailure("bank statement", bankParsed) ??
+        describeParseFailure("ledger", ledgerParsed);
+      if (failure) {
+        setMappingError(failure);
+        return; // stay on the mapping screen
+      }
+      setMappingError(null);
+      setParseNotices([
+        ...collectParseNotices("Bank statement", bankParsed),
+        ...collectParseNotices("Ledger", ledgerParsed),
+      ]);
+
+      const bankTxns = bankParsed.txns;
+      const ledgerTxns = ledgerParsed.txns;
       const result = reconcile(bankTxns, ledgerTxns);
       reconCacheRef.current = { bankTxns, ledgerTxns, result };
       const autoMatched = result.matches.filter((m) => m.status === "accepted").length;
@@ -1013,6 +1120,9 @@ export function AppShell() {
     setCurrentRecordId(null);
     setSaveStatus("idle");
     setUsingSampleData(false);
+    setUploadError(null);
+    setMappingError(null);
+    setParseNotices([]);
     setScreen("upload");
   };
 
@@ -1066,18 +1176,25 @@ export function AppShell() {
 
   const handleAddToBooks = (tx: MissingTxn) => {
     if (!engineOutput) return;
-    const original = engineOutput.baseMissingFromBooks.find((t) => t.id === tx.txnId);
+    // Look up in ALL bank txns, not just the engine's base missing list —
+    // the "Not in your records" list also contains bank txns from matches
+    // the user rejected, and those must be addable too.
+    const original = engineOutput.bankTxns.find((t) => t.id === tx.txnId);
     if (!original) return;
-    setUserAddedEntries((prev) => [
-      ...prev,
-      {
-        id: generateId(),
-        txnId: original.id,
-        date: original.date,
-        description: original.description,
-        amount: original.amount,
-      },
-    ]);
+    setUserAddedEntries((prev) =>
+      prev.some((e) => e.txnId === original.id)
+        ? prev // already added — never double-count
+        : [
+            ...prev,
+            {
+              id: generateId(),
+              txnId: original.id,
+              date: original.date,
+              description: original.description,
+              amount: original.amount,
+            },
+          ]
+    );
   };
 
   const handleRemoveAdded = (txnId: string) => {
@@ -1143,8 +1260,16 @@ export function AppShell() {
       periodEnd: values.periodEnd,
       openingBalance,
       closingBalance: openingBalance + engineOutput.balanceProof.bankNetChange,
-      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches, compositeMatches),
-      unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
+      // Persist what the user SEES (live, decision-adjusted values), not the
+      // raw first-pass engine output — History must agree with the dashboard.
+      status: deriveStatus(
+        liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
+        matches,
+        compositeMatches,
+        openItemCount
+      ),
+      unexplainedDifference:
+        liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
       bankTxns: engineOutput.bankTxns,
       ledgerTxns: engineOutput.ledgerTxns,
       matches,
@@ -1180,8 +1305,15 @@ export function AppShell() {
       ...existing,
       updatedAt: now,
       closingBalance: existing.openingBalance + engineOutput.balanceProof.bankNetChange,
-      status: deriveStatus(engineOutput.balanceProof.unexplainedDifference, matches, compositeMatches),
-      unexplainedDifference: engineOutput.balanceProof.unexplainedDifference,
+      // Live values, same as handleSaveFromDialog — see comment there.
+      status: deriveStatus(
+        liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
+        matches,
+        compositeMatches,
+        openItemCount
+      ),
+      unexplainedDifference:
+        liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
       bankTxns: engineOutput.bankTxns,
       ledgerTxns: engineOutput.ledgerTxns,
       matches,
@@ -1343,6 +1475,7 @@ export function AppShell() {
                 onRemove={removeFile}
                 onSample={useSample}
                 onStart={startAnalysis}
+                errorMessage={uploadError}
               />
             )}
 
@@ -1352,11 +1485,54 @@ export function AppShell() {
                 ledger={inspections.ledger}
                 onBack={() => setScreen("upload")}
                 onConfirm={confirmMapping}
+                errorMessage={mappingError}
               />
             )}
 
             {screen === "processing" && (
               <ProcessingScreen onComplete={onProcessed} counts={reconCounts} />
+            )}
+
+            {screen === "dashboard" && dashboardData && parseNotices.length > 0 && (
+              <div
+                data-testid="parse-notices"
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  padding: "12px 16px",
+                  marginBottom: 18,
+                  fontSize: 13,
+                  color: "var(--warn-ink, #7a5b00)",
+                  background: "var(--warn-soft, #fdf6e3)",
+                  border: "1px solid var(--warn, #e7d39a)",
+                  borderRadius: "var(--r-md, 10px)",
+                }}
+              >
+                <Icon name="alert" size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    Check your files — some rows couldn&apos;t be read or needed assumptions
+                  </div>
+                  {parseNotices.map((n, i) => (
+                    <div key={i}>{n}</div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setParseNotices([])}
+                  aria-label="Dismiss"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "inherit",
+                    padding: 2,
+                  }}
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
             )}
 
             {screen === "dashboard" && dashboardData && (

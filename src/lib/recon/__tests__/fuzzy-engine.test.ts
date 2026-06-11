@@ -255,14 +255,33 @@ describe("reconcile — balance proof with fuzzy", () => {
     expect(result.balanceProof.clearedSum).toBe(0);
   });
 
-  it("reconciled flag still depends only on the unexplained difference", () => {
+  it("reconciled requires a zero difference AND empty missing buckets", () => {
     const result = reconcile(
       [bank("b1", "2026-03-10", NOISY_BANK_DESC, -1850)],
       [ledger("l1", "2026-03-13", CLEAN_LEDGER_DESC, -1850)]
     );
-    // Net changes are equal, so the books reconcile — but not because the
-    // fuzzy suggestion "resolved" anything
+    // Net changes are equal AND both txns are explained by the fuzzy pairing
+    // (no missing items), so the first-pass verdict is reconciled. The flag
+    // is NOT just the net difference — see the offsetting-errors test below.
     expect(result.balanceProof.unexplainedDifference).toBe(0);
+    expect(result.missingFromBooks).toHaveLength(0);
+    expect(result.missingFromBank).toHaveLength(0);
     expect(result.reconciled).toBe(true);
+  });
+
+  it("offsetting unmatched items (net zero) are NOT reconciled", () => {
+    // A bank fee and a bank deposit, both absent from the ledger, with
+    // amounts that cancel: the net difference is zero but nothing matches.
+    // Reporting "reconciled" here is the classic offsetting-error lie.
+    const result = reconcile(
+      [
+        bank("b1", "2026-03-10", "MONTHLY SERVICE FEE", -5000),
+        bank("b2", "2026-03-12", "INTEREST PAYMENT", 5000),
+      ],
+      []
+    );
+    expect(result.balanceProof.unexplainedDifference).toBe(0);
+    expect(result.missingFromBooks).toHaveLength(2);
+    expect(result.reconciled).toBe(false);
   });
 });
