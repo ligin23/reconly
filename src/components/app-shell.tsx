@@ -971,8 +971,8 @@ export function AppShell() {
 
   const useSample = () => {
     Promise.all([
-      fetch("/samples/bank-march2026.csv").then((r) => r.text()),
-      fetch("/samples/ledger-march2026.csv").then((r) => r.text()),
+      fetch("/samples/bank-june2026.csv").then((r) => r.text()),
+      fetch("/samples/ledger-june2026.csv").then((r) => r.text()),
     ])
       .then(([bankContent, ledgerContent]) => {
         fileContentsRef.current = { bank: bankContent, ledger: ledgerContent };

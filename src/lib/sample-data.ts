@@ -131,13 +131,15 @@ const account: Account = {
   name: "Everyday Checking",
   bank: "Cedar Mutual",
   last4: "4471",
-  period: "March 2026",
-  periodRange: "Mar 1 – Mar 31, 2026",
+  period: "June 2026",
+  periodRange: "Jun 1 – Jun 30, 2026",
 };
 
+// Must describe the REAL files in public/samples/ — the upload cards show
+// these values for the loaded sample pair.
 const files = {
-  bank: { name: "cedar-checking-mar2026.csv", size: "48 KB", rows: 138 },
-  ledger: { name: "my-books-march.csv", size: "31 KB", rows: 130 },
+  bank: { name: "bank-june2026.csv", size: "1 KB", rows: 18 },
+  ledger: { name: "ledger-june2026.csv", size: "1 KB", rows: 23 },
 };
 
 const matched: SimpleTxn[] = [

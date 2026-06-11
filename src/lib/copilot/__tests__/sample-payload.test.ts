@@ -11,37 +11,27 @@ import { resolve } from "node:path";
 import { reconcile } from "../../recon/engine";
 import { buildReconContext } from "../context-builder";
 import { copilotRequestSchema } from "../schema";
+import { parseCsv as parseRealCsv } from "@/lib/parser";
 import type { Txn } from "../../recon/types";
 
 const root = resolve(__dirname, "../../../..");
 
+// The REAL parser, same path the app uses — the samples use realistic
+// formats (split debit/credit, thousands separators, accounting parens)
+// that a naive line.split(",") can't read.
 function parseCsv(path: string, source: "bank" | "ledger"): Txn[] {
-  return readFileSync(resolve(root, path), "utf-8")
-    .trim()
-    .split("\n")
-    .slice(1)
-    .map((line, i) => {
-      const [date, description, amount] = line.split(",");
-      return {
-        id: `${source}-${i}`,
-        source,
-        date,
-        description,
-        amount: Math.round(parseFloat(amount) * 100),
-        raw: { date, description, amount },
-      };
-    });
+  return parseRealCsv(readFileSync(resolve(root, path), "utf-8"), source);
 }
 
 describe("sample grounding payload (real CSVs, real engine)", () => {
-  const bank = parseCsv("public/samples/bank-march2026.csv", "bank");
-  const ledger = parseCsv("public/samples/ledger-march2026.csv", "ledger");
+  const bank = parseCsv("public/samples/bank-june2026.csv", "bank");
+  const ledger = parseCsv("public/samples/ledger-june2026.csv", "ledger");
 
   // Injected: a bank txn whose description embeds a full account number.
   bank.push({
     id: "bank-injected",
     source: "bank",
-    date: "2026-03-28",
+    date: "2026-06-27",
     description: "ACH WIRE TRANSFER FROM ACCT 873209114471 CHASE NY REF 5512",
     amount: -15000,
     raw: {},
@@ -59,7 +49,7 @@ describe("sample grounding payload (real CSVs, real engine)", () => {
     acknowledgedBankIds: [],
     balanceProof: result.balanceProof,
     reconciled: result.reconciled,
-    periodLabel: "March 2026",
+    periodLabel: "June 2026",
   });
   const request = {
     question: "Why doesn't my account balance?",
