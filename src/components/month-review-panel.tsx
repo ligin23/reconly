@@ -21,6 +21,8 @@ import {
 } from "@/lib/review/months";
 import {
   STATEMENT_STATUS_LABEL,
+  statementIssueCount,
+  summarizeStatements,
   type MonthStatementStatus,
   type StatementCheck,
   type StatementReview,
@@ -64,6 +66,8 @@ function StatusChip({ status }: { status: MonthStatus }) {
 
 const STATEMENT_TONE: Record<MonthStatementStatus | StatementStatus, { bg: string; ink: string }> = {
   verified: { bg: "var(--good-soft)", ink: "var(--good-ink)" },
+  "running-consistent": { bg: "var(--surface-2)", ink: "var(--ink-2)" },
+  "convention-review": { bg: "var(--warn-soft)", ink: "var(--warn-ink)" },
   "partly-verified": { bg: "var(--surface-2)", ink: "var(--ink-2)" },
   insufficient: { bg: "var(--surface-2)", ink: "var(--ink-2)" },
   mismatch: { bg: "var(--warn-soft)", ink: "var(--warn-ink)" },
@@ -92,6 +96,19 @@ function StatementChip({ status, label }: { status: MonthStatementStatus | State
 }
 
 const cents = (c: number) => money(c);
+
+/** "1 verified · 1 running balance consistent only · …" — non-zero parts only. */
+export function statementCountsText(c: Record<StatementStatus, number>): string {
+  const parts = [
+    c.verified > 0 ? `${c.verified} verified` : "",
+    c["running-consistent"] > 0 ? `${c["running-consistent"]} running balance consistent only` : "",
+    c.mismatch > 0 ? `${c.mismatch} with a mismatch` : "",
+    c.conflict > 0 ? `${c.conflict} conflicting` : "",
+    c["convention-review"] > 0 ? `${c["convention-review"]} sign convention needs review` : "",
+    c.insufficient > 0 ? `${c.insufficient} not verified` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "none checked";
+}
 
 /** One bank file's balance check: what was stated, what was found. */
 export function StatementCheckLine({ s }: { s: StatementCheck }) {
@@ -424,8 +441,7 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
       </div>
       <div data-testid="mr-statements" style={{ fontSize: 12.5, color: "var(--ink-2)", marginTop: 8 }}>
         <span style={{ fontWeight: 600, color: "var(--ink)" }}>Statement balances:</span>{" "}
-        {o.statements.verified} verified · {o.statements.mismatch} with a mismatch · {o.statements.conflict}{" "}
-        conflicting · {o.statements.insufficient} without enough information
+        {statementCountsText(o.statements)}
       </div>
       <div data-testid="mr-secondary" style={{ fontSize: 12.5, color: "var(--ink-2)", marginTop: 4 }}>
         {o.awaitingReviewMatches} suggested {o.awaitingReviewMatches === 1 ? "match is" : "matches are"} awaiting
@@ -602,14 +618,14 @@ export function SourceChecksCard({ review, statements }: { review: MonthReview; 
   const warnings = review.coverage.findings.filter(
     (f) => f.kind !== "balances-not-provided" && f.kind !== "statement-balances"
   );
-  const checkable = c.verified + c.mismatch + c.conflict;
+  const summary = summarizeStatements(c);
   const headline =
     statements.statements.length === 0
-      ? "Statement balances: not available for this reconciliation"
-      : checkable === 0
-      ? "Statement balances: not enough information in the uploaded bank file to check"
-      : `Statement balances: ${c.verified} verified · ${c.mismatch} with a mismatch · ${c.conflict} conflicting · ${c.insufficient} without enough information`;
-  const problem = c.mismatch + c.conflict > 0;
+      ? "Statement balances: Not verified — no statement information is available for this reconciliation"
+      : summary === "not-verified"
+      ? "Statement balances: Not verified — the uploaded bank file does not carry enough balance information to check"
+      : `Statement balances: ${statementCountsText(c)}`;
+  const problem = statementIssueCount(c) > 0;
   return (
     <div className="card" data-testid="source-checks" style={{ padding: "14px 18px", fontSize: 13 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -648,8 +664,9 @@ export function SourceChecksCard({ review, statements }: { review: MonthReview; 
             ))}
           </ul>
           <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 8 }}>
-            A statement check compares a bank file with its own stated balances. It is separate from the
-            reconciliation verdict above.
+            A statement check compares a bank file with its own stated balances. It is a separate check from
+            transaction matching: a mismatch or conflict withholds “Fully reconciled”, while missing balance
+            information is only reported as “Not verified”.
           </div>
         </div>
       )}

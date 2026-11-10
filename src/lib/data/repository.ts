@@ -93,6 +93,8 @@ export interface SourceFileInfo {
   statementOpening?: StatementBalance | null;
   statementClosing?: StatementBalance | null;
   statementAmbiguities?: string[];
+  /** Where the file itself says its balances are amounts owed, if it does. */
+  statementOwedIndication?: { line: number; text: string };
 }
 
 // ---- Repository interface -------------------------------------------

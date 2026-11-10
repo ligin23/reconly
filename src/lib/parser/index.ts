@@ -294,6 +294,12 @@ export type StatementBalances = {
   /** Balance cells on transaction rows that could not be read. */
   unreadableBalanceCells: number;
   /**
+   * Where the file itself says its balances are amounts OWED (a credit
+   * card, loan or line of credit): the line and the words found. Present
+   * only when the file says so — it is never inferred from the numbers.
+   */
+  owedIndication?: { line: number; text: string };
+  /**
    * Anything about the file's balance information that is unclear — two
    * different opening balances, a balance row with no readable value, an
    * amount and a balance that disagree. When non-empty, the balances are
@@ -301,6 +307,23 @@ export type StatementBalances = {
    */
   ambiguities: string[];
 };
+
+/** Words in a title line that say the balance is an amount owed. */
+const OWED_WORDS =
+  /\b(credit\s*card|amount\s+owed|balance\s+owed|amount\s+due|balance\s+due|outstanding\s+balance|loan\s+(?:account|statement|balance)|line\s+of\s+credit|mortgage\s+(?:account|statement))\b/i;
+/** Balance-column titles that say the same thing. */
+const OWED_BALANCE_HEADERS = ["amount owed", "balance owed", "balance due", "outstanding balance"];
+
+/** An explicit statement, in the title lines, that balances are amounts owed. */
+function findOwedIndication(csvText: string, titleLineCount: number): { line: number; text: string } | undefined {
+  if (titleLineCount <= 0) return undefined;
+  const lines = csvText.split(LINE_BREAK, titleLineCount);
+  for (let i = 0; i < lines.length; i++) {
+    const m = OWED_WORDS.exec(lines[i]);
+    if (m) return { line: i + 1, text: m[0] };
+  }
+  return undefined;
+}
 
 const OPENING_WORDS = /\b(opening|beginning|starting|previous)\s+balance\b/i;
 const CLOSING_WORDS = /\b(closing|ending|new)\s+balance\b/i;
@@ -653,7 +676,9 @@ export function parseCsvDetailed(
     [effectiveMap.date, effectiveMap.description, effectiveMap.amount, effectiveMap.debit, effectiveMap.credit]
       .filter((c): c is string => Boolean(c))
   );
-  const balanceCol = headers.find((h) => BALANCE_HEADERS.includes(h) && !mappedSet.has(h));
+  const balanceCol = headers.find(
+    (h) => (BALANCE_HEADERS.includes(h) || OWED_BALANCE_HEADERS.includes(h)) && !mappedSet.has(h)
+  );
   const statement: StatementBalances = {
     opening: null,
     closing: null,
@@ -661,6 +686,14 @@ export function parseCsvDetailed(
     unreadableBalanceCells: 0,
     ambiguities: [],
   };
+  // Does the file SAY its balances are amounts owed? (Title line, or the
+  // balance column's own title.) Recorded only when it does.
+  const owed =
+    findOwedIndication(csvText, lineOffset) ??
+    (balanceCol && OWED_BALANCE_HEADERS.includes(balanceCol)
+      ? { line: headerRow, text: balanceCol }
+      : undefined);
+  if (owed) statement.owedIndication = owed;
   const noteBalance = (kind: "opening" | "closing", found: StatementBalance) => {
     const existing = statement[kind];
     if (!existing) {

@@ -171,7 +171,8 @@ describe("executive summary (shared model)", () => {
   });
 
   it("summarises statement verification and coverage without overstating", () => {
-    expect(row("Statement balance verification")).toBe("1 verified · 1 mismatch · 0 conflicting · 0 insufficient information (of 2 bank files)");
+    expect(row("Statement verification")).toBe("Statement review needed — 1 verified · 1 mismatch (of 2 bank files)");
+    expect(row("Overall status")).toBe("Not reconciled");
     expect(row("Source coverage")).toMatch(/^Coverage not verified — \d+ notes? below$/);
     expect(JSON.stringify(sum.executive)).not.toMatch(/fully reconciled/i);
   });
@@ -193,7 +194,7 @@ describe("month-by-month table", () => {
       ["February 2026", "3", "0", "0", "1", "0", "0", "2"],
     ]);
     expect(sum.months[0].findings).toBe("Review needed");
-    expect(sum.months[0].statementBalance).toBe("Statement activity verified");
+    expect(sum.months[0].statementBalance).toBe("Statement balance verified");
     expect(sum.months[1].findings).toBe("Review needed; Source data incomplete or unverified");
     expect(sum.months[1].statementBalance).toBe("Statement balance mismatch");
     expect(sum.months[1].notes).toContain("the uploaded bank files have rows dated in this month, but the records files have none");
@@ -209,7 +210,7 @@ describe("statement verification table", () => {
   const sum = buildReportModel(scenario()).summary!;
   it("shows the stated figures, the difference and the result for each bank file", () => {
     expect(sum.statements.map((s) => [s.file, s.status, s.difference])).toEqual([
-      ["bank-jan.csv", "Statement activity verified", "$0.00"],
+      ["bank-jan.csv", "Statement balance verified", "$0.00"],
       ["bank-feb.csv", "Statement balance mismatch", "($6,866.10)"],
     ]);
     expect(sum.statements[0].period).toBe("Jan 1, 2026 – Jan 31, 2026 (stated)");
@@ -230,7 +231,7 @@ describe("verified facts / potential discrepancies / missing evidence / your dec
   it("verified facts", () => {
     const facts = of("Verified facts");
     expect(facts).toContain("2 transactions matched exactly on date, amount and description.");
-    expect(facts.some((t) => t.startsWith('"bank-jan.csv": Opening balance $1,000.00 plus'))).toBe(true);
+    expect(facts.some((t) => t.startsWith('"bank-jan.csv" — statement balance verified: Opening balance $1,000.00 plus'))).toBe(true);
     expect(facts).toContain("1 repeated row proven by the files to be a copy (set aside automatically, not counted).");
   });
   it("potential discrepancies", () => {
@@ -313,7 +314,7 @@ describe("Excel workbook", () => {
     const { text, lines } = (await sheets(scenario())).read("Financial Summary");
     expect(text).toContain("Overall results");
     expect(text).toContain("Bank rows | 6 imported · 5 in use · 1 set aside");
-    expect(text).toContain("Statement balance verification | 1 verified · 1 mismatch");
+    expect(text).toContain("Statement verification | Statement review needed — 1 verified · 1 mismatch");
     expect(text).toContain("Month-by-month findings");
     const feb = lines.find((l) => l[0] === "February 2026")!;
     expect(feb.slice(1, 8)).toEqual(["3", "0", "0", "1", "0", "0", "2"]);
@@ -377,9 +378,9 @@ describe("legacy saved reconciliations", () => {
     });
     const sum = buildReportModel({ ...ctx, bankTxns: bank, ledgerTxns: ledger, duplicates: undefined, review: { months, statements } }).summary!;
     const row = (label: string) => sum.executive.find(([l]) => l === label)![1];
-    expect(row("Statement balance verification")).toBe("No statement information available");
+    expect(row("Statement verification")).toBe("Not verified — no statement information available");
     expect(row("Duplicate review")).toBe("No repeated rows were found in the uploaded files");
     expect(sum.statements).toEqual([]);
-    expect(sum.months.every((m) => m.statementBalance === "Insufficient statement information")).toBe(true);
+    expect(sum.months.every((m) => m.statementBalance === "Not verified — insufficient statement information")).toBe(true);
   });
 });

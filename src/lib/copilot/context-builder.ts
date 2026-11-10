@@ -289,6 +289,8 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
                     ? ("complete" as const)
                     : ("not-applicable" as const),
               duplicateGroupsToReview: input.verdict.unresolvedDuplicateGroups,
+              statement: input.verdict.statement,
+              statementFilesNeedingReview: input.verdict.statementFilesNeedingReview,
             },
           }
         : {}),

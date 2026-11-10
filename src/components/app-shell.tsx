@@ -927,6 +927,14 @@ export function AppShell() {
       dashboardData.counts.review
     : 0;
 
+  // Statement balance verification: each bank file against its own stated
+  // balances, using EVERY imported row (set-aside rows included — the
+  // duplicate review must not change what the original statement proves).
+  const statementReview = useMemo(
+    () => (engineOutput ? verifyStatements(imported?.bank ?? engineOutput.bankTxns, sourceFiles) : null),
+    [engineOutput, imported, sourceFiles]
+  );
+
   // The verdict keeps two things apart: whether the money agrees
   // (financial) and whether possible duplicates still await a decision
   // (data quality). "Fully reconciled" needs both; a flagged duplicate
@@ -940,6 +948,7 @@ export function AppShell() {
         unexplainedDifference: liveBalanceProof.unexplainedDifference,
         openItemCount,
         unresolvedDuplicateGroups,
+        statements: statementReview?.counts,
       })
     : null;
   const reconciled = verdict?.reconciled ?? false;
@@ -950,14 +959,6 @@ export function AppShell() {
 
   // Month-by-month findings: a grouping of the ONE full-range
   // reconciliation above — the engine is never run per month.
-  // Statement balance verification: each bank file against its own stated
-  // balances, using EVERY imported row (set-aside rows included — the
-  // duplicate review must not change what the original statement proves).
-  const statementReview = useMemo(
-    () => (engineOutput ? verifyStatements(imported?.bank ?? engineOutput.bankTxns, sourceFiles) : null),
-    [engineOutput, imported, sourceFiles]
-  );
-
   const monthReview = useMemo(() => {
     if (!engineOutput) return null;
     return buildMonthReview({
@@ -1308,6 +1309,9 @@ export function AppShell() {
           statementOpening: f.diagnostics.statement.opening,
           statementClosing: f.diagnostics.statement.closing,
           statementAmbiguities: f.diagnostics.statement.ambiguities,
+          ...(f.diagnostics.statement.owedIndication
+            ? { statementOwedIndication: f.diagnostics.statement.owedIndication }
+            : {}),
         }))
       );
       reconCacheRef.current = {
@@ -1553,7 +1557,8 @@ export function AppShell() {
         matches,
         compositeMatches,
         openItemCount,
-        unresolvedDuplicateGroups
+        unresolvedDuplicateGroups,
+        verdict?.statementFilesNeedingReview ?? 0
       ),
       unexplainedDifference:
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
@@ -1601,7 +1606,8 @@ export function AppShell() {
         matches,
         compositeMatches,
         openItemCount,
-        unresolvedDuplicateGroups
+        unresolvedDuplicateGroups,
+        verdict?.statementFilesNeedingReview ?? 0
       ),
       unexplainedDifference:
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,

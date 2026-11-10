@@ -46,6 +46,7 @@ function load(...files: ImportFileInput[]) {
     statementOpening: f.diagnostics.statement.opening,
     statementClosing: f.diagnostics.statement.closing,
     statementAmbiguities: f.diagnostics.statement.ambiguities,
+    ...(f.diagnostics.statement.owedIndication ? { statementOwedIndication: f.diagnostics.statement.owedIndication } : {}),
   }));
   return { rows: c.txns, sourceFiles, review: verifyStatements(c.txns, sourceFiles) };
 }
@@ -130,7 +131,7 @@ describe("explicit opening and closing balances — the equation", () => {
   it("opening + net activity = closing → verified, with the figures it used", () => {
     const s = one(AMT, "01/01/2026,Opening Balance,1000.00", "01/05/2026,COFFEE,-45.10", "01/20/2026,CLIENT,1200.00", "01/31/2026,Closing Balance,2154.90");
     expect(s.status).toBe("verified");
-    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Statement activity verified");
+    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Statement balance verified");
     expect(s).toMatchObject({ netActivity: 115490, difference: 0, convention: "standard", basis: ["stated-balances"], rowCount: 2 });
     expect(s.opening).toEqual({ cents: 100000, source: "stated", line: 2 });
     expect(s.closing).toEqual({ cents: 215490, source: "stated", line: 5 });
@@ -165,7 +166,7 @@ describe("missing balances → insufficient, never invented", () => {
   it("no balances at all", () => {
     const s = one(AMT, "01/05/2026,COFFEE,-45.10", "01/20/2026,CLIENT,1200.00");
     expect(s.status).toBe("insufficient");
-    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Insufficient statement information");
+    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Not verified — insufficient statement information");
     expect(s.opening).toBeNull();
     expect(s.closing).toBeNull();
     expect(s.difference).toBeNull();
@@ -192,29 +193,61 @@ describe("negative balances", () => {
   });
   it("crossing zero in a running balance", () => {
     const s = one(BAL, "01/05/2026,FEE,-60.00,-10.00", "01/20/2026,DEPOSIT,300.00,290.00");
-    expect(s.status).toBe("verified");
+    expect(s.status).toBe("running-consistent"); // no stated balances → consistency only
     expect(s.opening).toEqual({ cents: 5000, source: "calculated" });
   });
 });
 
 describe("debit / credit layouts and sign conventions", () => {
-  it("debit and credit columns (money out in Debit) verify under the standard convention", () => {
-    const s = one("Date,Description,Debit,Credit,Balance", "01/01/2026,OPENING BALANCE,,,1000.00", "01/05/2026,COFFEE,45.10,,954.90", "01/20/2026,CLIENT,,1200.00,2154.90");
-    expect(s).toMatchObject({ status: "verified", convention: "standard", netActivity: 115490 });
+  it("debit and credit columns (money out in Debit) are read under the standard convention", () => {
+    const rows = ["01/01/2026,OPENING BALANCE,,,1000.00", "01/05/2026,COFFEE,45.10,,954.90", "01/20/2026,CLIENT,,1200.00,2154.90"];
+    // Opening stated, closing NOT stated → running-balance consistency only.
+    const s = one("Date,Description,Debit,Credit,Balance", ...rows);
+    expect(s).toMatchObject({ status: "running-consistent", convention: "standard", netActivity: 115490 });
     expect(s.basis).toEqual(["stated-balances", "running-balance"]);
+    // With the closing balance stated as well → the statement balance is verified.
+    const full = one("Date,Description,Debit,Credit,Balance", ...rows, "01/31/2026,CLOSING BALANCE,,,2154.90");
+    expect(full).toMatchObject({ status: "verified", convention: "standard", difference: 0 });
   });
 
   it("a credit-card style file — balance is an amount owed — is recognised from its own running balance", () => {
     const s = one(BAL, "01/05/2026,RESTAURANT,-45.10,245.10", "01/12/2026,PAYMENT THANK YOU,100.00,145.10", "01/20/2026,FUEL,-60.00,205.10");
-    expect(s).toMatchObject({ status: "verified", convention: "owed" });
+    expect(s).toMatchObject({ status: "running-consistent", convention: "owed" });
     expect(s.opening).toEqual({ cents: 20000, source: "calculated" });
     expect(s.reasons[0]).toMatch(/balance rises when money goes out/);
   });
 
-  it("stated balances only, amount-owed convention: verified and the convention is named", () => {
+  it("stated balances only, agreeing ONLY as amounts owed, with nothing in the file to say so → sign convention needs review", () => {
     const s = one(AMT, "01/01/2026,Opening Balance,200.00", "01/05/2026,RESTAURANT,-45.10", "01/31/2026,Closing Balance,245.10");
+    expect(s.status).toBe("convention-review");
+    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Sign convention needs review");
+    expect(s.convention).toBe("unknown"); // not silently chosen
+    expect(s.difference).toBe(-9020);     // the gap under the ordinary reading
+    expect(s.reasons[0]).toMatch(/WOULD agree if they are amounts owed/);
+    expect(s.reasons[0]).toMatch(/the file does not say so and has no running balance/);
+    expect(s.reasons[0]).toMatch(/not verified/);
+  });
+
+  it("the same figures WITH an explicit indication in the file (a title line) → verified as amounts owed", () => {
+    const { review } = load(file("card.csv", ["Business Credit Card statement", AMT, "01/01/2026,Opening Balance,200.00", "01/05/2026,RESTAURANT,-45.10", "01/31/2026,Closing Balance,245.10"], 2));
+    const s = review.statements[0];
     expect(s).toMatchObject({ status: "verified", convention: "owed", difference: 0 });
+    expect(s.reasons[0]).toContain('The file says its balances are amounts owed ("Credit Card", line 1)');
     expect(s.reasons[0]).toMatch(/less the file's net activity/);
+  });
+
+  it("an explicit balance-column title (\"Balance due\") also counts, and is captured by the parser", () => {
+    const csv = ["Date,Description,Amount,Balance Due", "01/05/2026,RESTAURANT,-45.10,245.10", "01/12/2026,PAYMENT,100.00,145.10"].join("\n");
+    const d = parseCsvDetailed(csv, "bank").diagnostics.statement;
+    expect(d.owedIndication).toEqual({ line: 1, text: "balance due" });
+    expect(d.hasBalanceColumn).toBe(true);
+    // A plain file says nothing of the kind.
+    expect(parseCsvDetailed([AMT, "01/05/2026,X,-1.00"].join("\n"), "bank").diagnostics.statement.owedIndication).toBeUndefined();
+  });
+
+  it("a word like 'credit' in an ordinary transaction is not an indication", () => {
+    const s = one(AMT, "01/01/2026,Opening Balance,200.00", "01/05/2026,CREDIT CARD PAYMENT TO VISA,-45.10", "01/31/2026,Closing Balance,245.10");
+    expect(s.status).toBe("convention-review");
   });
 
   it("neither convention fits → mismatch (no convention is assumed to force a pass)", () => {
@@ -229,22 +262,24 @@ describe("running-balance formats", () => {
 
   it("oldest-first", () => {
     const s = one(BAL, ...rows);
-    expect(s).toMatchObject({ status: "verified", basis: ["running-balance"], convention: "standard", difference: 0 });
+    expect(s).toMatchObject({ status: "running-consistent", basis: ["running-balance"], convention: "standard", difference: 0 });
+    expect(STATEMENT_STATUS_LABEL[s.status]).toBe("Running balance consistency verified");
     expect(s.opening).toEqual({ cents: 100000, source: "calculated" }); // labelled as calculated, not stated
     expect(s.closing).toEqual({ cents: 125490, source: "running", line: 4 });
-    expect(s.reasons[0]).toMatch(/does not state an opening balance; the one shown is calculated from the first row/);
+    expect(s.reasons[0]).toMatch(/states no opening or closing balance \(the opening shown is calculated from the first row/);
+    expect(s.reasons[0]).toMatch(/not independent verification of a stated opening and closing balance/);
   });
 
   it("newest-first (many banks export this way)", () => {
     const s = one(BAL, ...[...rows].reverse());
-    expect(s.status).toBe("verified");
+    expect(s.status).toBe("running-consistent");
     expect(s.opening!.cents).toBe(100000);
     expect(s.closing).toEqual({ cents: 125490, source: "running", line: 2 });
   });
 
   it("formatted balances ($, thousands separators, parentheses)", () => {
     const s = one(BAL, '01/05/2026,COFFEE,-45.10,"$1,954.90"', '01/12/2026,RENT,"-2,900.00",($945.10)');
-    expect(s.status).toBe("verified");
+    expect(s.status).toBe("running-consistent");
     expect(s.closing!.cents).toBe(-94510);
   });
 
@@ -329,7 +364,7 @@ describe("overlapping statement periods", () => {
     const b = file("jan20-feb.csv", [BAL, "01/20/2026,CLIENT,1200.00,2154.90", "02/03/2026,RENT,-900.00,1254.90"]);
     const { review } = load(a, b);
     expect(review.overlaps).toEqual([{ fileA: "jan.csv", fileB: "jan20-feb.csv", start: "2026-01-20", end: "2026-01-20" }]);
-    expect(review.statements.map((s) => s.status)).toEqual(["verified", "verified"]);
+    expect(review.statements.map((s) => s.status)).toEqual(["running-consistent", "running-consistent"]);
   });
 });
 
@@ -345,7 +380,7 @@ describe("multiple accounts are never combined", () => {
     const a = file("checking.csv", [H, "****1111,01/05/2026,A,-10.00,90.00", "****1111,01/20/2026,B,-5.00,85.00"]);
     const b = file("savings.csv", [H, "****2222,01/05/2026,A,-10.00,4990.00", "****2222,01/20/2026,B,-5.00,4985.00"]);
     const { review } = load(a, b);
-    expect(review.statements.map((s) => [s.account, s.status])).toEqual([["****1111", "verified"], ["****2222", "verified"]]);
+    expect(review.statements.map((s) => [s.account, s.status])).toEqual([["****1111", "running-consistent"], ["****2222", "running-consistent"]]);
     expect(review.overlaps).toEqual([]); // same dates, different accounts → not even an overlap
   });
 });
@@ -355,10 +390,11 @@ describe("partial-month and cross-year statements — the month view never overs
     file(name, [`Statement period: ${from} - ${to}`, AMT, `${from},Opening Balance,${open}`, ...rows, `${to},Closing Balance,${close}`], 2);
 
   it("a verified file with NO stated period proves only first-row to last-row", () => {
-    const { review } = load(file("bank.csv", [BAL, "01/05/2026,COFFEE,-45.10,954.90", "01/20/2026,CLIENT,1200.00,2154.90"]));
+    const { review } = load(file("bank.csv", [AMT, "01/01/2026,Opening Balance,1000.00", "01/05/2026,COFFEE,-45.10", "01/20/2026,CLIENT,1200.00", "01/31/2026,Closing Balance,2154.90"]));
+    expect(review.statements[0].status).toBe("verified");
     const m = monthStatement(review, "2026-01");
     expect(m.status).toBe("partly-verified");
-    expect(m.label).toBe("Statement activity verified for part of the month");
+    expect(m.label).toBe("Statement balance verified for part of the month");
     expect(m.detail).toContain("Jan 5, 2026 to Jan 20, 2026");
     expect(m.detail).toContain("the file states no period");
   });
@@ -420,8 +456,8 @@ describe("duplicate set-asides do not change statement evidence", () => {
     expect(state.setAside).toHaveLength(2); // transaction counts change…
     expect(activeTxns(rows, state)).toHaveLength(3);
     expect(review.statements.map((s) => [s.file, s.status, s.rowCount])).toEqual([
-      ["jan.csv", "verified", 2],
-      ["q1.csv", "verified", 3], // …the statement evidence does not
+      ["jan.csv", "running-consistent", 2],
+      ["q1.csv", "running-consistent", 3], // …the statement evidence does not
     ]);
     // Had the check used only the rows in use, one statement would have lost its rows.
     const fromActive = verifyStatements(activeTxns(rows, state), sourceFiles);
@@ -459,9 +495,11 @@ describe("monthly verification summaries", () => {
     expect(jan.statement.status).toBe("verified");
     expect(feb.statement.status).toBe("mismatch");
     expect(feb.statement.statements[0].difference).toBe(-4510);
-    expect(months.overview.statements).toEqual({ verified: 1, mismatch: 1, insufficient: 0, conflict: 0 });
+    expect(months.overview.statements).toEqual({
+      verified: 1, "running-consistent": 0, mismatch: 1, "convention-review": 0, insufficient: 0, conflict: 0,
+    });
     expect(months.coverage.findings[0].kind).toBe("statement-balances");
-    expect(months.coverage.findings[0].text).toContain("1 verified, 1 with a mismatch");
+    expect(months.coverage.findings[0].text).toContain("1 with stated balances verified, 0 with a consistent running balance only, 1 with a mismatch");
     expect(months.coverage.verified).toBe(false);
   });
 
@@ -486,7 +524,9 @@ describe("legacy saved reconciliations", () => {
     const rows: Txn[] = [{ id: "bank-0", source: "bank", date: "2026-01-05", description: "COFFEE", amount: -4510, raw: {} }];
     const review = verifyStatements(rows, undefined);
     expect(review.statements).toEqual([]);
-    expect(review.counts).toEqual({ verified: 0, mismatch: 0, insufficient: 0, conflict: 0 });
+    expect(review.counts).toEqual({
+      verified: 0, "running-consistent": 0, mismatch: 0, "convention-review": 0, insufficient: 0, conflict: 0,
+    });
     expect(monthStatement(review, "2026-01")).toMatchObject({ status: "insufficient", statements: [] });
   });
   it("a Phase 1–3 record (files known, balances never captured) → insufficient", () => {
@@ -514,7 +554,7 @@ describe("a month fully covered by a verified statement, plus another bank file 
     const m = monthStatement(review, "2026-01");
     expect(m.status).toBe("partly-verified");
     expect(m.detail).toBe(
-      'Verified: "stmt-jan.csv". Not checked: "extra-jan.csv" (not enough balance information), so some of this month\'s bank rows are not covered by a verified statement.'
+      'Verified: "stmt-jan.csv". Not checked: "extra-jan.csv" (not enough balance information). So some of this month\'s bank rows are not covered by a verified statement.'
     );
   });
 });

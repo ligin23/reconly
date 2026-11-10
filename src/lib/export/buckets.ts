@@ -10,6 +10,7 @@
 import type { Txn, Match, AnyCompositeMatch } from "@/lib/recon/types";
 import type { UserAddedEntry } from "@/lib/sample-data";
 import type { MonthReview } from "@/lib/review/months";
+import { deriveVerdict, type Verdict } from "@/lib/recon/verdict";
 import type { StatementReview } from "@/lib/review/statements";
 import {
   unresolvedGroupCount,
@@ -224,6 +225,21 @@ export function openItemCount(b: ExportBuckets): number {
 }
 
 /**
+ * The verdict for a report — derived with the SAME function the results
+ * screen uses, from the same inputs, so the two cannot disagree.
+ */
+export function reportVerdict(ctx: ExportContext, b: ExportBuckets): Verdict {
+  return deriveVerdict({
+    unexplainedDifference: ctx.unexplainedDifference,
+    openItemCount: openItemCount(b),
+    unresolvedDuplicateGroups: ctx.duplicates
+      ? unresolvedGroupCount(ctx.duplicates.groups, ctx.duplicates.state)
+      : 0,
+    statements: ctx.review?.statements.counts,
+  });
+}
+
+/**
  * The headline sentence both reports print.
  *
  * B31: "not reconciled" with a zero difference used to print "differ by
@@ -231,14 +247,39 @@ export function openItemCount(b: ExportBuckets): number {
  * must say so — never claim a match, never print a $0.00 difference.
  */
 export function verdictText(ctx: ExportContext, b: ExportBuckets): string {
-  if (ctx.reconciled) return "Your records match your bank for this period.";
+  const verdict = reportVerdict(ctx, b);
+  if (ctx.reconciled) {
+    // Matching transactions is not the same as verified statement
+    // balances: when the review carries statement evidence, say what it
+    // shows right next to the all-clear.
+    const base = "Your records match your bank for this period.";
+    if (!ctx.review || verdict.statement === "verified") return base;
+    return (
+      base +
+      (verdict.statement === "running-balance-only"
+        ? " Statement balances: running balance consistent; stated opening and closing balances not independently verified."
+        : verdict.statement === "partly-verified"
+          ? " Statement balances: verified for some bank files only."
+          : " Statement balances: Not verified.")
+    );
+  }
   if (ctx.unexplainedDifference === 0) {
     const n = openItemCount(b);
-    // Financially clean, but possible duplicates haven't been ruled on:
-    // its own state — not a discrepancy, and not an all-clear.
-    const dup = ctx.duplicates ? unresolvedGroupCount(ctx.duplicates.groups, ctx.duplicates.state) : 0;
+    // Transactions agree, but a data-quality review is outstanding: its
+    // own state — not a discrepancy, and not an all-clear. Same rules as
+    // the results screen (lib/recon/verdict).
+    const dup = verdict.unresolvedDuplicateGroups;
+    const files = verdict.statementFilesNeedingReview;
+    const dupText = `${dup} possible duplicate group${dup === 1 ? " has" : "s have"} not been reviewed`;
+    const fileText = `${files} bank file${files === 1 ? "'s own balances need" : "s' own balances need"} review`;
+    if (n === 0 && dup > 0 && files > 0) {
+      return `Transactions match — duplicate and statement review needed: ${dupText}, and ${fileText}.`;
+    }
+    if (n === 0 && files > 0) {
+      return `Transactions match — statement review needed: ${fileText}.`;
+    }
     if (n === 0 && dup > 0) {
-      return `Totals agree — duplicate review needed: ${dup} possible duplicate group${dup === 1 ? " has" : "s have"} not been reviewed.`;
+      return `Totals agree — duplicate review needed: ${dupText}.`;
     }
     return n > 0
       ? `Your totals agree, but ${n} item${n === 1 ? " still needs" : "s still need"} attention — this period is not fully reconciled.`

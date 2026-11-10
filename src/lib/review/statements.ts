@@ -18,36 +18,105 @@
 //   example an opening balance worked back from the first running
 //   balance) is labelled "calculated", and never treated as stated.
 //
-// SIGN CONVENTION — detected per file, never assumed
+// SIGN CONVENTION — established by evidence, never chosen to fit
 //   Amounts are signed the way the rest of Reconly reads them (money out
-//   is negative). Balances are not all alike: on a deposit account the
-//   balance falls when money goes out ("standard"); on a credit-card or
-//   loan statement the balance is an amount owed and RISES when money
-//   goes out ("owed"). The file's own running balance decides which it
-//   is; with only an opening and a closing balance, whichever convention
-//   makes the equation hold is reported — and named in the result.
+//   is negative). On a deposit account the balance falls when money goes
+//   out ("standard"); on a credit-card or loan statement the balance is an
+//   amount owed and RISES when money goes out ("owed"). The "owed" reading
+//   is used ONLY when (a) the file's own running balance shows it, or
+//   (b) the file says so explicitly (a title line or balance-column title
+//   such as "Credit card", "Amount owed", "Balance due"). If stated
+//   opening and closing balances agree only under the "owed" reading and
+//   neither (a) nor (b) holds, the statement is NOT verified: the sign
+//   convention needs review. Reconly never picks whichever convention
+//   happens to make the numbers balance.
 //
-// STATUSES
-//   verified     — "Statement activity verified"
-//   mismatch     — "Statement balance mismatch" (exact difference given)
-//   insufficient — "Insufficient statement information"
-//   conflict     — "Conflicting statement evidence"
-// A verified statement says the file is internally consistent. It does
-// NOT say the books are reconciled.
+// TWO KINDS OF POSITIVE EVIDENCE — kept apart
+//   verified            "Statement balance verified": the file STATES both
+//                       an opening and a closing balance, and its activity
+//                       supports them, with no contradiction.
+//   running-consistent  "Running balance consistency verified": every
+//                       row's running balance follows from the one before.
+//                       The rows are internally consistent, but an opening
+//                       or closing balance may be calculated rather than
+//                       stated — so this is NOT independent verification
+//                       of the statement's stated balances.
+//
+// OTHER STATUSES
+//   mismatch          — "Statement balance mismatch" (exact difference)
+//   convention-review — "Sign convention needs review"
+//   conflict          — "Conflicting statement evidence"
+//   insufficient      — "Not verified — insufficient statement information"
+// None of these says the books are reconciled.
 // ============================================================
 
 import type { Txn } from "@/lib/recon/types";
 import type { SourceFileInfo } from "@/lib/data/repository";
 import { accountOf } from "@/lib/import/duplicates";
 
-export type StatementStatus = "verified" | "mismatch" | "insufficient" | "conflict";
+export type StatementStatus =
+  | "verified"
+  | "running-consistent"
+  | "mismatch"
+  | "convention-review"
+  | "insufficient"
+  | "conflict";
 
 export const STATEMENT_STATUS_LABEL: Record<StatementStatus, string> = {
-  verified: "Statement activity verified",
+  verified: "Statement balance verified",
+  "running-consistent": "Running balance consistency verified",
   mismatch: "Statement balance mismatch",
-  insufficient: "Insufficient statement information",
+  "convention-review": "Sign convention needs review",
+  insufficient: "Not verified — insufficient statement information",
   conflict: "Conflicting statement evidence",
 };
+
+/** Statuses that mean something is wrong or unresolved in the evidence. */
+export const STATEMENT_NEEDS_REVIEW: readonly StatementStatus[] = ["mismatch", "conflict", "convention-review"];
+
+const emptyCounts = (): Record<StatementStatus, number> => ({
+  verified: 0,
+  "running-consistent": 0,
+  mismatch: 0,
+  "convention-review": 0,
+  insufficient: 0,
+  conflict: 0,
+});
+
+/**
+ * The statement evidence for the whole reconciliation, in one word:
+ *   review-needed        a mismatch, a conflict, or an unsettled sign convention
+ *   verified             every bank file's stated balances are verified
+ *   partly-verified      some are; others are consistency-only or not verified
+ *   running-balance-only no stated balances verified; running balances are consistent
+ *   not-verified         no usable statement evidence (not, by itself, an error)
+ */
+export type StatementSummary =
+  | "review-needed"
+  | "verified"
+  | "partly-verified"
+  | "running-balance-only"
+  | "not-verified";
+
+export const STATEMENT_SUMMARY_LABEL: Record<StatementSummary, string> = {
+  "review-needed": "Statement review needed",
+  verified: "Statement balances verified",
+  "partly-verified": "Statement balances verified for some files only",
+  "running-balance-only": "Running balance consistent — stated balances not verified",
+  "not-verified": "Not verified",
+};
+
+export function statementIssueCount(counts: Record<StatementStatus, number>): number {
+  return counts.mismatch + counts.conflict + counts["convention-review"];
+}
+
+export function summarizeStatements(counts: Record<StatementStatus, number>): StatementSummary {
+  if (statementIssueCount(counts) > 0) return "review-needed";
+  const other = counts["running-consistent"] + counts.insufficient;
+  if (counts.verified > 0) return other === 0 ? "verified" : "partly-verified";
+  if (counts["running-consistent"] > 0) return "running-balance-only";
+  return "not-verified";
+}
 
 /** A balance used in a check, and where it came from. */
 export type BalanceValue = {
@@ -252,21 +321,26 @@ function checkFile(file: SourceFileInfo, rows: Txn[]): StatementCheck {
       };
     }
     if (statedOpening || statedClosing) check.basis.unshift("stated-balances");
+    const bothStated = Boolean(statedOpening && statedClosing);
     return {
       ...check,
       opening: check.opening ?? { cents: impliedOpening, source: "calculated" },
       closing: check.closing ?? { cents: lastBalance, source: "running", line: last.sourceLine },
       difference: 0,
-      status: "verified",
+      // Stated opening AND closing, supported by the activity → the
+      // statement's balances are verified. Anything less is internal
+      // consistency only, and is labelled as such.
+      status: bothStated ? "verified" : "running-consistent",
       reasons: [
-        `Every row's running balance follows from the one before it across all ${rows.length} rows` +
-          (statedOpening && statedClosing
-            ? ", and the stated opening and closing balances agree with it."
-            : statedOpening
-              ? ", and the stated opening balance agrees with it."
+        (bothStated
+          ? `The file states an opening and a closing balance, and its activity supports both: every row's running balance follows from the one before it across all ${rows.length} rows.`
+          : `Every row's running balance follows from the one before it across all ${rows.length} rows, so the file's rows are internally consistent. ` +
+            (statedOpening
+              ? "The stated opening balance agrees with it, but the file states no closing balance (the one shown is the last running balance)."
               : statedClosing
-                ? ", and the stated closing balance agrees with it."
-                : ". The file does not state an opening balance; the one shown is calculated from the first row.") +
+                ? "The stated closing balance agrees with it, but the file states no opening balance (the one shown is calculated from the first row)."
+                : "The file states no opening or closing balance (the opening shown is calculated from the first row; the closing is the last running balance).") +
+            " This is not independent verification of a stated opening and closing balance.") +
           conventionNote(check.convention as "standard" | "owed"),
         ...check.reasons,
       ],
@@ -278,16 +352,41 @@ function checkFile(file: SourceFileInfo, rows: Txn[]): StatementCheck {
     check.basis.push("stated-balances");
     const standard = statedOpening.cents + netActivity - statedClosing.cents;
     const owed = statedOpening.cents - netActivity - statedClosing.cents;
-    if (standard === 0 || (owed === 0 && netActivity !== 0)) {
-      const convention = standard === 0 ? "standard" : "owed";
+    if (standard === 0) {
       return {
         ...check,
-        convention,
+        convention: "standard",
         difference: 0,
         status: "verified",
         reasons: [
-          `Opening balance ${money(statedOpening.cents)} ${convention === "standard" ? "plus" : "less"} the file's net activity of ${money(netActivity)} equals the closing balance ${money(statedClosing.cents)}.` +
-            conventionNote(convention),
+          `Opening balance ${money(statedOpening.cents)} plus the file's net activity of ${money(netActivity)} equals the closing balance ${money(statedClosing.cents)}.`,
+          ...check.reasons,
+        ],
+      };
+    }
+    if (owed === 0 && netActivity !== 0) {
+      // The balances agree only if they are amounts owed. That reading is
+      // accepted when the FILE says so — never because it makes the sum work.
+      const said = file.statementOwedIndication;
+      if (said) {
+        return {
+          ...check,
+          convention: "owed",
+          difference: 0,
+          status: "verified",
+          reasons: [
+            `The file says its balances are amounts owed ("${said.text}", line ${said.line}). Opening balance ${money(statedOpening.cents)} less the file's net activity of ${money(netActivity)} equals the closing balance ${money(statedClosing.cents)}.` +
+              conventionNote("owed"),
+            ...check.reasons,
+          ],
+        };
+      }
+      return {
+        ...check,
+        difference: standard,
+        status: "convention-review",
+        reasons: [
+          `Opening balance ${money(statedOpening.cents)} plus the file's net activity of ${money(netActivity)} gives ${money(statedOpening.cents + netActivity)}, not the stated closing balance of ${money(statedClosing.cents)} — a difference of ${money(standard)}. The balances WOULD agree if they are amounts owed (as on a credit-card or loan statement), but the file does not say so and has no running balance to show it. The sign convention needs review; until then this statement is not verified.`,
           ...check.reasons,
         ],
       };
@@ -407,7 +506,7 @@ export function verifyStatements(bankRows: Txn[], sourceFiles: SourceFileInfo[] 
     }
   }
 
-  const counts: Record<StatementStatus, number> = { verified: 0, mismatch: 0, insufficient: 0, conflict: 0 };
+  const counts = emptyCounts();
   for (const s of statements) counts[s.status]++;
   return { statements, overlaps, counts };
 }
@@ -417,16 +516,20 @@ export function verifyStatements(bankRows: Txn[], sourceFiles: SourceFileInfo[] 
 export type MonthStatementStatus =
   | "verified"
   | "partly-verified"
+  | "running-consistent"
   | "mismatch"
+  | "convention-review"
   | "conflict"
   | "insufficient";
 
 export const MONTH_STATEMENT_LABEL: Record<MonthStatementStatus, string> = {
-  verified: "Statement activity verified",
-  "partly-verified": "Statement activity verified for part of the month",
+  verified: "Statement balance verified",
+  "partly-verified": "Statement balance verified for part of the month",
+  "running-consistent": "Running balance consistent — stated balances not verified",
   mismatch: "Statement balance mismatch",
+  "convention-review": "Sign convention needs review",
   conflict: "Conflicting statement evidence",
-  insufficient: "Insufficient statement information",
+  insufficient: "Not verified — insufficient statement information",
 };
 
 export type MonthStatement = {
@@ -446,10 +549,14 @@ function lastDayOf(month: string): string {
 /**
  * What the statement evidence says about one calendar month.
  *
- * A month is "verified" only when verified statements that STATE their
- * period cover every day of it. A verified file with no stated period
- * proves only the stretch between its first and last row, so the month is
- * "verified for part of the month" — never more than the evidence covers.
+ * A month is "verified" only when (1) statements whose STATED balances are
+ * verified, and which state their period, cover every day of it, AND
+ * (2) every other bank file with rows in the month is also verified. If
+ * another relevant file is consistency-only or not verified, the month is
+ * "verified for part of the month", saying which evidence is which. A
+ * verified file with no stated period proves only the stretch between its
+ * first and last row. Running-balance consistency on its own never makes a
+ * month "verified".
  */
 export function monthStatement(review: StatementReview, month: string): MonthStatement {
   const first = `${month}-01`;
@@ -472,11 +579,34 @@ export function monthStatement(review: StatementReview, month: string): MonthSta
   const by = (status: StatementStatus) => touching.filter((s) => s.status === status);
   if (by("conflict").length > 0) return make("conflict", `Conflicting evidence in ${names(by("conflict"))}.`);
   if (by("mismatch").length > 0) return make("mismatch", `Balances do not agree with activity in ${names(by("mismatch"))}.`);
+  if (by("convention-review").length > 0) {
+    return make(
+      "convention-review",
+      `${names(by("convention-review"))}: the balances agree only if they are amounts owed, and the file does not establish that.`
+    );
+  }
 
   const verified = by("verified");
+  const consistent = by("running-consistent");
+  const unchecked = by("insufficient");
+  const span = (s: StatementCheck) => {
+    const r = s.statedPeriod ?? s.activity!;
+    const from = r.start < first ? first : r.start;
+    const to = r.end > last ? last : r.end;
+    return `${niceDate(from)} to ${niceDate(to)} ("${s.file}"${s.statedPeriod ? "" : ", from its first to its last row — the file states no period"})`;
+  };
+
   if (verified.length === 0) {
+    if (consistent.length > 0) {
+      return make(
+        "running-consistent",
+        `Running balances are internally consistent for ${consistent.map(span).join("; ")}. No stated opening and closing balance was verified for this month.` +
+          (unchecked.length > 0 ? ` Not checked: ${names(unchecked)}.` : "")
+      );
+    }
     return make("insufficient", `${names(touching)} ${touching.length === 1 ? "does" : "do"} not carry enough balance information to check.`);
   }
+
   // Days of the month covered by verified statements that state their period.
   const stated = verified
     .filter((s) => s.statedPeriod)
@@ -486,27 +616,26 @@ export function monthStatement(review: StatementReview, month: string): MonthSta
   for (const p of stated) {
     if (p.start <= addDays(coveredThrough, 1) && p.end > coveredThrough) coveredThrough = p.end;
   }
-  if (coveredThrough >= last) {
-    const unchecked = by("insufficient");
-    if (unchecked.length === 0) {
-      return make("verified", `Verified statements stating their own period cover every day of the month (${names(verified)}).`);
-    }
-    // Every day is covered by a verified statement, but another bank file
-    // with rows in this month could not be checked — so not all of the
-    // month's bank rows sit under a verified statement.
-    return make(
-      "partly-verified",
-      `Verified: ${names(verified)}. Not checked: ${names(unchecked)} (not enough balance information), so some of this month's bank rows are not covered by a verified statement.`
-    );
+  const others = [...consistent, ...unchecked];
+  if (coveredThrough >= last && others.length === 0) {
+    return make("verified", `Verified statements stating their own period cover every day of the month (${names(verified)}).`);
   }
-  const spans = verified.map((s) => {
-    const r = s.statedPeriod ?? s.activity!;
-    const from = r.start < first ? first : r.start;
-    const to = r.end > last ? last : r.end;
-    return `${niceDate(from)} to ${niceDate(to)} ("${s.file}"${s.statedPeriod ? "" : ", from its first to its last row — the file states no period"})`;
-  });
+  if (coveredThrough >= last) {
+    // Every day is covered by a verified statement, but another bank file
+    // with rows in this month is not verified — so not all of the month's
+    // bank rows sit under a verified statement.
+    const parts = [
+      `Verified: ${names(verified)}.`,
+      consistent.length > 0 ? `Running balance consistent only (stated balances not verified): ${names(consistent)}.` : "",
+      unchecked.length > 0 ? `Not checked: ${names(unchecked)} (not enough balance information).` : "",
+      "So some of this month's bank rows are not covered by a verified statement.",
+    ].filter(Boolean);
+    return make("partly-verified", parts.join(" "));
+  }
   return make(
     "partly-verified",
-    `Statement evidence covers ${spans.join("; ")}. The rest of the month is not covered by a verified statement.`
+    `Statement evidence covers ${verified.map(span).join("; ")}. The rest of the month is not covered by a verified statement.` +
+      (consistent.length > 0 ? ` Running balance consistent only: ${names(consistent)}.` : "") +
+      (unchecked.length > 0 ? ` Not checked: ${names(unchecked)}.` : "")
   );
 }

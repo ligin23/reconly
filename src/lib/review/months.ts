@@ -55,7 +55,14 @@ import {
 const NO_STATEMENTS: StatementReview = {
   statements: [],
   overlaps: [],
-  counts: { verified: 0, mismatch: 0, insufficient: 0, conflict: 0 },
+  counts: {
+    verified: 0,
+    "running-consistent": 0,
+    mismatch: 0,
+    "convention-review": 0,
+    insufficient: 0,
+    conflict: 0,
+  },
 };
 
 export type MonthStatus =
@@ -425,7 +432,8 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
   // ---- Coverage: only what the evidence supports --------------------
   const statementReview = input.statementReview ?? NO_STATEMENTS;
   const sc = statementReview.counts;
-  const checkable = sc.verified + sc.mismatch + sc.conflict;
+  const checkable =
+    sc.verified + sc["running-consistent"] + sc.mismatch + sc.conflict + sc["convention-review"];
   const findings: CoverageFinding[] = [
     checkable === 0
       ? {
@@ -437,9 +445,11 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
       : {
           kind: "statement-balances",
           text:
-            `Statement balances were checked for the bank files that carry them: ${sc.verified} verified, ${sc.mismatch} with a mismatch, ` +
-            `${sc.conflict} with conflicting evidence, ${sc.insufficient} without enough information. ` +
-            "A verified statement shows that file's balances agree with its own transactions; it cannot show a transaction that is missing from both the bank file and your records.",
+            `Statement balances were checked for the bank files that carry them: ${sc.verified} with stated balances verified, ` +
+            `${sc["running-consistent"]} with a consistent running balance only, ${sc.mismatch} with a mismatch, ` +
+            `${sc.conflict} with conflicting evidence, ${sc["convention-review"]} whose sign convention needs review, ` +
+            `${sc.insufficient} not verified. ` +
+            "A verified statement shows that file's stated balances agree with its own transactions; a consistent running balance shows only that the file's rows are internally consistent. Neither can show a transaction that is missing from both the bank file and your records.",
         },
   ];
   for (const o of statementReview.overlaps) {

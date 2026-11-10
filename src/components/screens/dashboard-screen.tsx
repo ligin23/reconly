@@ -23,7 +23,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { DuplicatesPanel, type DuplicatesPanelProps } from "@/components/duplicates-panel";
 import { MonthReviewPanel, SourceChecksCard } from "@/components/month-review-panel";
 import type { MonthReview } from "@/lib/review/months";
-import type { StatementReview } from "@/lib/review/statements";
+import { STATEMENT_SUMMARY_LABEL, type StatementReview } from "@/lib/review/statements";
 
 // ---- Breakdown (right side of status hero) --------------------------
 
@@ -138,8 +138,24 @@ function StatusHero({
 }) {
   // Money agrees and nothing is open, but possible duplicates haven't been
   // ruled on. Not a discrepancy and not an all-clear — its own state.
-  if (verdict?.status === "totals-agree-duplicate-review") {
+  if (
+    verdict &&
+    (verdict.status === "totals-agree-duplicate-review" ||
+      verdict.status === "transactions-match-statement-review" ||
+      verdict.status === "transactions-match-duplicate-and-statement-review")
+  ) {
     const n = verdict.unresolvedDuplicateGroups;
+    const files = verdict.statementFilesNeedingReview;
+    const duplicatesPart =
+      n > 0
+        ? `${n} possible duplicate ${n === 1 ? "group still needs" : "groups still need"} your decision`
+        : "";
+    const statementPart =
+      files > 0
+        ? `${files} bank ${files === 1 ? "file's own balances need" : "files' own balances need"} review (they don't add up, conflict, or their sign convention is unclear)`
+        : "";
+    const needs = [duplicatesPart, statementPart].filter(Boolean).join(", and ");
+    const target = n > 0 ? "duplicates-panel" : "month-review";
     return (
       <div
         className="card"
@@ -187,8 +203,7 @@ function StatusHero({
                 {VERDICT_LABEL[verdict.status]}
               </div>
               <div style={{ fontSize: 14.5, color: "var(--ink-2)", marginTop: 5, textWrap: "pretty" }}>
-                Your bank and your records agree and nothing is unmatched. {n} possible duplicate{" "}
-                {n === 1 ? "group still needs" : "groups still need"} your decision before this
+                Your bank and your records agree and nothing is unmatched. {needs} before this
                 period can be marked complete.
               </div>
             </div>
@@ -199,12 +214,13 @@ function StatusHero({
             iconRight="arrowRight"
             data-testid="review-duplicates-btn"
             onClick={() =>
-              document
-                .querySelector('[data-testid="duplicates-panel"]')
-                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+              (
+                document.querySelector(`[data-testid="${target}"]`) ??
+                document.querySelector('[data-testid="source-checks"]')
+              )?.scrollIntoView({ behavior: "smooth", block: "start" })
             }
           >
-            Review duplicates
+            {n > 0 ? "Review duplicates" : "Review statement checks"}
           </Button>
         </div>
         {/* The financial side is clean — show it that way. */}
@@ -280,6 +296,15 @@ function StatusHero({
               <div style={{ fontSize: 14.5, color: "var(--ink-2)", marginTop: 3 }}>
                 Your books match your bank, down to the penny.
               </div>
+              {verdict && verdict.statement !== "verified" && (
+                <div data-testid="reconciled-statement-note" style={{ fontSize: 13, color: "var(--ink-2)", marginTop: 6, maxWidth: 420 }}>
+                  {verdict.statement === "not-verified"
+                    ? "Statement balances: Not verified — the uploaded bank files don't carry enough balance information to check."
+                    : verdict.statement === "running-balance-only"
+                    ? "Statement balances: running balance is consistent, but stated opening and closing balances were not independently verified."
+                    : "Statement balances: verified for some bank files only."}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -734,26 +759,17 @@ export function DashboardScreen({
         verdict={verdict}
       />
 
-      {/* Two separate answers: does the money agree, and is the duplicate
-          review finished? Shown only when the import had repeated rows. */}
-      {verdict && duplicates && duplicates.groups.length > 0 && (
+      {/* Three separate answers, always shown side by side: do the
+          transactions match, is the duplicate review finished, and what do
+          the bank files' own balances show? */}
+      {verdict && (
         <div
           data-testid="status-strip"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 14,
-            fontSize: 13,
-          }}
+          style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, fontSize: 13 }}
         >
-          <div
-            className="card"
-            data-testid="status-financial"
-            data-state={verdict.financial}
-            style={{ padding: "12px 16px" }}
-          >
+          <div className="card" data-testid="status-financial" data-state={verdict.financial} style={{ padding: "12px 16px" }}>
             <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>
-              Financial reconciliation
+              Transaction matching
             </div>
             <span style={{ fontWeight: 600, color: verdict.financial === "agrees" ? "var(--good-ink)" : "var(--warn-ink)" }}>
               {verdict.financial === "agrees"
@@ -761,51 +777,49 @@ export function DashboardScreen({
                 : "Not reconciled — differences or open items remain"}
             </span>
           </div>
-          <div
-            className="card"
-            data-testid="status-duplicates"
-            data-state={verdict.dataQuality}
-            style={{ padding: "12px 16px" }}
-          >
+          <div className="card" data-testid="status-duplicates" data-state={verdict.dataQuality} style={{ padding: "12px 16px" }}>
             <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>
               Duplicate review
             </div>
             <span style={{ fontWeight: 600, color: verdict.dataQuality === "clear" ? "var(--good-ink)" : "var(--warn-ink)" }}>
-              {verdict.dataQuality === "clear"
+              {verdict.dataQuality !== "clear"
+                ? `${verdict.unresolvedDuplicateGroups} possible duplicate ${verdict.unresolvedDuplicateGroups === 1 ? "group" : "groups"} to review`
+                : duplicates && duplicates.groups.length > 0
                 ? "Complete — every possible duplicate was set aside or confirmed as separate"
-                : `${verdict.unresolvedDuplicateGroups} possible duplicate ${verdict.unresolvedDuplicateGroups === 1 ? "group" : "groups"} to review`}
+                : "No repeated rows found"}
             </span>
+          </div>
+          <div className="card" data-testid="status-statements" data-state={verdict.statement} style={{ padding: "12px 16px" }}>
+            <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>
+              Statement verification
+            </div>
+            <span
+              style={{
+                fontWeight: 600,
+                color:
+                  verdict.statement === "verified"
+                    ? "var(--good-ink)"
+                    : verdict.statement === "review-needed"
+                    ? "var(--warn-ink)"
+                    : "var(--ink-2)",
+              }}
+            >
+              {STATEMENT_SUMMARY_LABEL[verdict.statement]}
+            </span>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+              {verdict.statement === "not-verified"
+                ? "The uploaded bank files don't carry enough balance information to check. That is missing evidence, not an error."
+                : verdict.statement === "running-balance-only"
+                ? "Rows are internally consistent; stated opening and closing balances were not independently verified."
+                : verdict.statement === "review-needed"
+                ? `${verdict.statementFilesNeedingReview} bank ${verdict.statementFilesNeedingReview === 1 ? "file needs" : "files need"} review.`
+                : verdict.statement === "partly-verified"
+                ? "Some bank files could not be fully verified."
+                : "Stated opening and closing balances agree with each file's activity."}
+            </div>
           </div>
         </div>
       )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-        <KpiCard
-          label="Matched"
-          value={counts.matched}
-          kind="matched"
-          hint="Lined up on both sides"
-        />
-        <KpiCard
-          label="Needs review"
-          value={reviewLeft}
-          kind="review"
-          hint={reviewLeft ? "A quick yes or no" : "All done"}
-          onClick={reviewLeft ? onOpenReview : undefined}
-        />
-        <KpiCard
-          label="Not in your records"
-          value={counts.missingFromBooks}
-          kind="problem"
-          hint="On your bank, not in your records"
-        />
-        <KpiCard
-          label="Not cleared yet"
-          value={counts.missingFromBank}
-          kind="missing"
-          hint="In your books, not the bank"
-        />
-      </div>
 
       {/* One month of data: the month panel is hidden, so the statement
           balance results and source notes are shown here instead. */}

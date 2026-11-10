@@ -54,17 +54,19 @@ export function deriveStatus(
   compositeMatches: Pick<AnyCompositeMatch, "status">[] = [],
   openItemCount = 0,
   /** Duplicate groups still awaiting the user's decision. */
-  unresolvedDuplicateGroups = 0
+  unresolvedDuplicateGroups = 0,
+  /** Bank files with a statement mismatch, conflict or unsettled sign convention. */
+  statementFilesNeedingReview = 0
 ): ReconciliationRecord["status"] {
   const hasPendingSuggestions =
     matches.some((m) => m.status === "suggested") ||
     compositeMatches.some((c) => c.status === "suggested");
   if (hasPendingSuggestions) return "in_progress";
   if (unexplainedDifference === 0 && openItemCount === 0) {
-    // Totals agree. Unreviewed possible duplicates keep the period open
-    // ("in progress") — it is not reconciled until they are ruled on, but
-    // it is not a financial discrepancy either.
-    return unresolvedDuplicateGroups > 0 ? "in_progress" : "reconciled";
+    // Totals agree. Unreviewed possible duplicates, or a statement whose
+    // balances don't add up, keep the period open ("in progress") — it is
+    // not reconciled, but it is not a transaction discrepancy either.
+    return unresolvedDuplicateGroups > 0 || statementFilesNeedingReview > 0 ? "in_progress" : "reconciled";
   }
   return "not_reconciled";
 }

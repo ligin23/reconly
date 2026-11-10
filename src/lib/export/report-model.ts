@@ -13,10 +13,17 @@ import { groupStatus, importCounts, unresolvedGroupCount } from "@/lib/import/du
 import type { Txn } from "@/lib/recon/types";
 import { formatPeriod } from "@/lib/data/utils";
 import { MONTH_STATUS_LABEL } from "@/lib/review/months";
-import { STATEMENT_STATUS_LABEL, type StatementCheck } from "@/lib/review/statements";
+import {
+  STATEMENT_STATUS_LABEL,
+  STATEMENT_SUMMARY_LABEL,
+  type StatementCheck,
+  type StatementStatus,
+} from "@/lib/review/statements";
+import { VERDICT_LABEL } from "@/lib/recon/verdict";
 import {
   deriveBuckets,
   openItemCount,
+  reportVerdict,
   verdictText,
   type ExportBuckets,
   type ExportComposite,
@@ -446,12 +453,26 @@ function buildSummary(
   const anyDuplicates = (ctx.duplicates?.groups.length ?? 0) > 0 || (ctx.duplicates?.state.setAside.length ?? 0) > 0;
   const sc = statements.counts;
   const bankFiles = statements.statements.length;
+  // The same verdict the results screen shows, from the same function.
+  const verdict = reportVerdict(ctx, b);
+  const countsText = (c: Record<StatementStatus, number>) =>
+    [
+      c.verified > 0 ? `${c.verified} verified` : "",
+      c["running-consistent"] > 0 ? `${c["running-consistent"]} running balance consistent only` : "",
+      c.mismatch > 0 ? `${c.mismatch} mismatch` : "",
+      c.conflict > 0 ? `${c.conflict} conflicting` : "",
+      c["convention-review"] > 0 ? `${c["convention-review"]} sign convention needs review` : "",
+      c.insufficient > 0 ? `${c.insufficient} not verified` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
   const coverage = months.coverage.findings.map((f) => f.text);
 
   const executive: [string, string][] = [
     ["Account", ctx.accountName],
     ["Review period", formatPeriod(ctx.periodStart, ctx.periodEnd)],
     ["Months analyzed", `${months.overview.monthsAnalyzed} (${months.rangeLabel})`],
+    ["Overall status", VERDICT_LABEL[verdict.status]],
     ["Bank rows", side((m) => m.bank)],
     ["Records rows", side((m) => m.ledger)],
     [
@@ -473,10 +494,10 @@ function buildSummary(
     ["Unmatched transactions", `${unmatchedBank} on the bank statement · ${unmatchedLedger} in your records`],
     ["Suggested matches awaiting review", String(months.overview.awaitingReviewMatches)],
     [
-      "Statement balance verification",
+      "Statement verification",
       bankFiles === 0
-        ? "No statement information available"
-        : `${sc.verified} verified · ${sc.mismatch} mismatch · ${sc.conflict} conflicting · ${sc.insufficient} insufficient information (of ${plural(bankFiles, "bank file")})`,
+        ? "Not verified — no statement information available"
+        : `${STATEMENT_SUMMARY_LABEL[verdict.statement]} — ${countsText(sc)} (of ${plural(bankFiles, "bank file")})`,
     ],
     ["Source coverage", `${months.coverage.label} — ${plural(coverage.length, "note")} below`],
   ];
@@ -489,7 +510,10 @@ function buildSummary(
   if (exact > 0) add("Verified facts", `${plural(exact, "transaction")} matched exactly on date, amount and description.`);
   if (financialAgrees) add("Verified facts", "The totals of the bank rows and records rows in use agree, and no item is left open.");
   for (const s of statements.statements.filter((x) => x.status === "verified")) {
-    add("Verified facts", `"${s.file}": ${s.reasons[0]}`);
+    add("Verified facts", `"${s.file}" — statement balance verified: ${s.reasons[0]}`);
+  }
+  for (const s of statements.statements.filter((x) => x.status === "running-consistent")) {
+    add("Verified facts", `"${s.file}" — running balance consistency only (not a verification of stated balances): ${s.reasons[0]}`);
   }
   const auto = ctx.duplicates?.state.setAside.filter((x) => x.by === "auto").length ?? 0;
   if (auto > 0) add("Verified facts", `${plural(auto, "repeated row")} proven by the files to be ${auto === 1 ? "a copy" : "copies"} (set aside automatically, not counted).`);
@@ -501,12 +525,14 @@ function buildSummary(
   if (unmatchedLedger > 0) add("Potential discrepancies", `${plural(unmatchedLedger, "records entry", "records entries")} with no match on the bank statement.`);
   if (model.reviewCount > 0) add("Potential discrepancies", `${plural(model.reviewCount, "suggested match", "suggested matches")} not yet confirmed or rejected.`);
   if (unresolvedDuplicateGroups > 0) add("Potential discrepancies", `${plural(unresolvedDuplicateGroups, "possible duplicate group")} still counted and not yet reviewed.`);
-  for (const s of statements.statements.filter((x) => x.status === "mismatch" || x.status === "conflict")) {
+  for (const s of statements.statements.filter(
+    (x) => x.status === "mismatch" || x.status === "conflict" || x.status === "convention-review"
+  )) {
     add("Potential discrepancies", `"${s.file}" — ${STATEMENT_STATUS_LABEL[s.status]}: ${s.reasons[0]}`);
   }
 
   for (const s of statements.statements.filter((x) => x.status === "insufficient")) {
-    add("Missing or insufficient evidence", `"${s.file}": ${s.reasons[0]}`);
+    add("Missing or insufficient evidence", `"${s.file}" — not verified: ${s.reasons[0]}`);
   }
   for (const text of coverage) add("Missing or insufficient evidence", text);
 
@@ -573,7 +599,7 @@ function buildSummary(
       source: l.source,
     })),
     ...statements.statements
-      .filter((s) => s.status === "mismatch" || s.status === "conflict")
+      .filter((s) => s.status === "mismatch" || s.status === "conflict" || s.status === "convention-review")
       .map((s) => ({
         type: STATEMENT_STATUS_LABEL[s.status],
         date: s.activity ? shortDate(s.activity.end) : "",

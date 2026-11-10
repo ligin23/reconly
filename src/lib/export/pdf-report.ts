@@ -126,14 +126,17 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
   const textColor: [number, number, number] = ctx.reconciled ? C.good : C.warn;
   const verdictText = model.verdict;
 
-  doc.setFillColor(...bgColor);
-  doc.roundedRect(ML, y, CW, 44, 4, 4, "F");
-
+  // The verdict sentence can be long ("Transactions match — statement
+  // review needed: …"), so it wraps and the banner grows with it.
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
+  const verdictLines: string[] = doc.splitTextToSize(verdictText, CW - 28);
+  const bannerHeight = 28 + verdictLines.length * 16;
+  doc.setFillColor(...bgColor);
+  doc.roundedRect(ML, y, CW, bannerHeight, 4, 4, "F");
   doc.setTextColor(...textColor);
-  doc.text(verdictText, ML + 14, y + 27);
-  y += 64;
+  doc.text(verdictLines, ML + 14, y + 27);
+  y += bannerHeight + 20;
 
   // ==================================================================
   // SUMMARY NUMBERS

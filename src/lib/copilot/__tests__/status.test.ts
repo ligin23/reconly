@@ -55,6 +55,8 @@ describe("status sent to the copilot — one test per state", () => {
       financial: "differs",
       duplicateReview: "not-applicable",
       duplicateGroupsToReview: 0,
+      statement: "not-verified",
+      statementFilesNeedingReview: 0,
     });
   });
 
@@ -68,6 +70,8 @@ describe("status sent to the copilot — one test per state", () => {
       financial: "differs",
       duplicateReview: "needed",
       duplicateGroupsToReview: 2,
+      statement: "not-verified",
+      statementFilesNeedingReview: 0,
     });
   });
 
@@ -82,6 +86,8 @@ describe("status sent to the copilot — one test per state", () => {
       financial: "agrees",
       duplicateReview: "needed",
       duplicateGroupsToReview: 2,
+      statement: "not-verified",
+      statementFilesNeedingReview: 0,
     });
   });
 
@@ -94,6 +100,8 @@ describe("status sent to the copilot — one test per state", () => {
       financial: "agrees",
       duplicateReview: "complete",
       duplicateGroupsToReview: 0,
+      statement: "not-verified",
+      statementFilesNeedingReview: 0,
     });
     expect(ctx.summary.counts.duplicatesSetAside).toBe(1);
   });
@@ -112,7 +120,9 @@ describe("privacy, masking and size limits are unchanged", () => {
   it("the status carries only fixed labels and one count — no transaction data", () => {
     const ctx = buildReconContext(input({ balanceProof: proof(-1200), reconciled: false, bankTxns: [fee], baseMissingFromBooks: [fee], verdict }));
     const status = ctx.summary.status!;
-    expect(Object.keys(status).sort()).toEqual(["duplicateGroupsToReview", "duplicateReview", "financial", "overall"]);
+    expect(Object.keys(status).sort()).toEqual([
+      "duplicateGroupsToReview", "duplicateReview", "financial", "overall", "statement", "statementFilesNeedingReview",
+    ]);
     for (const v of Object.values(status)) {
       expect(typeof v === "number" || /^[a-z-]+$/.test(String(v))).toBe(true);
     }

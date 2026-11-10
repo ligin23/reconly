@@ -56,20 +56,41 @@ const contextItemSchema = z
   .strict();
 
 /**
- * Two separate statuses, so the copilot never has to guess from a zero
- * difference. Fixed labels and one count only — no transaction data.
- * Optional so an older client's payload still validates.
+ * Three separate statuses — transactions, duplicate review, statement
+ * verification — so the copilot never has to guess from a zero
+ * difference. Fixed labels and two counts only — no transaction data, no
+ * balances, no file names. Optional so an older client's payload still
+ * validates.
  */
 const statusSchema = z
   .object({
     /** The verdict the user sees on the results screen. */
-    overall: z.enum(["reconciled", "totals-agree-duplicate-review", "not-reconciled"]),
+    overall: z.enum([
+      "reconciled",
+      "totals-agree-duplicate-review",
+      "transactions-match-statement-review",
+      "transactions-match-duplicate-and-statement-review",
+      "not-reconciled",
+    ]),
     /** Does the money agree with nothing left open? */
     financial: z.enum(["agrees", "differs"]),
     /** "not-applicable" = no repeated rows were found in the uploaded files. */
     duplicateReview: z.enum(["not-applicable", "needed", "complete"]),
     /** Possible-duplicate groups the user has not ruled on yet. */
     duplicateGroupsToReview: count,
+    /**
+     * What the bank files' own balances show (optional for older clients):
+     *   review-needed        a mismatch, a conflict, or an unsettled sign convention
+     *   verified             stated opening and closing balances verified for every bank file
+     *   partly-verified      verified for some bank files only
+     *   running-balance-only running balances are internally consistent; no stated balances verified
+     *   not-verified         no usable statement evidence was available
+     */
+    statement: z
+      .enum(["review-needed", "verified", "partly-verified", "running-balance-only", "not-verified"])
+      .optional(),
+    /** Bank files with a statement mismatch, conflict or unsettled sign convention. */
+    statementFilesNeedingReview: count.optional(),
   })
   .strict();
 
