@@ -55,10 +55,29 @@ const contextItemSchema = z
   })
   .strict();
 
+/**
+ * Two separate statuses, so the copilot never has to guess from a zero
+ * difference. Fixed labels and one count only — no transaction data.
+ * Optional so an older client's payload still validates.
+ */
+const statusSchema = z
+  .object({
+    /** The verdict the user sees on the results screen. */
+    overall: z.enum(["reconciled", "totals-agree-duplicate-review", "not-reconciled"]),
+    /** Does the money agree with nothing left open? */
+    financial: z.enum(["agrees", "differs"]),
+    /** "not-applicable" = no repeated rows were found in the uploaded files. */
+    duplicateReview: z.enum(["not-applicable", "needed", "complete"]),
+    /** Possible-duplicate groups the user has not ruled on yet. */
+    duplicateGroupsToReview: count,
+  })
+  .strict();
+
 const summarySchema = z
   .object({
     periodLabel: z.string().max(64),
     reconciled: z.boolean(),
+    status: statusSchema.optional(),
     bankNetChange: money,
     ledgerNetChange: money,
     clearedSum: money,

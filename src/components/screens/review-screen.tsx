@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ReviewItem,
   ReviewSide,
@@ -14,7 +14,9 @@ import { Button } from "@/components/ui/button";
 import { Confidence } from "@/components/ui/confidence";
 import { Money } from "@/components/ui/money";
 
-export type ReviewDecision = "accept" | "reject" | "manual";
+// There is no "manual" decision: the app has no manual-matching UI, and the
+// old "Match manually" button silently confirmed the suggested pairing.
+export type ReviewDecision = "accept" | "reject";
 export type ReviewMeta = { pickedCombination?: string[] };
 
 function ReviewCard({
@@ -31,8 +33,6 @@ function ReviewCard({
       ? { transform: "translateX(34px) rotate(2deg)", opacity: 0 }
       : exiting === "reject"
       ? { transform: "translateX(-34px) rotate(-2deg)", opacity: 0 }
-      : exiting === "manual"
-      ? { transform: "translateY(-22px) scale(0.97)", opacity: 0 }
       : { transform: "none", opacity: 1 };
 
   const Side = ({
@@ -99,6 +99,16 @@ function ReviewCard({
         <Money cents={item.amount} type={item.type} big />
       </div>
       <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{data.sub}</div>
+      {data.source && (
+        <div
+          className="mono"
+          data-testid="review-source"
+          title="The file and row this transaction was read from"
+          style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 3, wordBreak: "break-word" }}
+        >
+          From {data.source}
+        </div>
+      )}
     </div>
   );
 
@@ -233,14 +243,6 @@ function ReviewCard({
         <Button variant="reject" block icon="x" onClick={() => onDecide("reject")}>
           Not a match
         </Button>
-        <Button
-          variant="secondary"
-          icon="search"
-          onClick={() => onDecide("manual")}
-          style={{ flex: "none" }}
-        >
-          Match manually
-        </Button>
       </div>
     </div>
   );
@@ -276,6 +278,15 @@ function ComponentRow({ comp }: { comp: CompositeComponent }) {
         >
           {comp.desc}
         </div>
+        {comp.source && (
+          <div
+            className="mono"
+            data-testid="review-source"
+            style={{ fontSize: 11, color: "var(--ink-3)", wordBreak: "break-word" }}
+          >
+            From {comp.source}
+          </div>
+        )}
       </div>
       <span
         style={{
@@ -632,6 +643,15 @@ function CompositeReviewCard({
             <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)" }}>
               {item.bankDesc}
             </div>
+            {item.bankSource && (
+              <div
+                className="mono"
+                data-testid="review-source"
+                style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, wordBreak: "break-word" }}
+              >
+                From {item.bankSource}
+              </div>
+            )}
           </div>
           <span style={{ fontSize: 22, fontWeight: 600 }}>
             <Money cents={item.bankAmount} type={item.bankTxnType} big />
@@ -773,7 +793,8 @@ function GhostCard({ depth }: { depth: number }) {
 type ReviewScreenProps = {
   queue: AnyReviewItem[];
   total: number;
-  onDecide: (decision: ReviewDecision, meta?: ReviewMeta) => void;
+  /** `itemId` is the item that was on screen when the user decided. */
+  onDecide: (decision: ReviewDecision, meta?: ReviewMeta, itemId?: string) => void;
   onBack: () => void;
 };
 
@@ -782,12 +803,25 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
   const decided = total - queue.length;
   const current = queue[0];
 
+  // The exit animation delays the decision by ~290ms. Capture WHICH item the
+  // user decided on (not "whatever is first when the timer fires"), and
+  // cancel the timer if the screen unmounts first.
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    []
+  );
+
   const handleDecide = (decision: ReviewDecision, meta?: ReviewMeta) => {
-    if (exiting) return;
+    if (exiting || !current) return;
+    const itemId = current.id;
     setExiting(decision);
-    setTimeout(() => {
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
       setExiting(null);
-      onDecide(decision, meta);
+      onDecide(decision, meta, itemId);
     }, 290);
   };
 
@@ -833,7 +867,7 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
             className="serif"
             style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.025em" }}
           >
-            All reviewed!
+            {total === 0 ? "Nothing to review" : "All reviewed!"}
           </h2>
           <p
             style={{
@@ -844,8 +878,9 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
               textWrap: "pretty",
             }}
           >
-            You went through all {total} pairs we weren&apos;t sure about. Everything&apos;s been
-            sorted into your results.
+            {total === 0
+              ? "There were no uncertain pairs in this reconciliation. Anything still open is listed under “Not in your records” and “Not cleared yet” on the results page."
+              : `You went through ${total === 1 ? "the 1 pair" : `all ${total} pairs`} we weren't sure about. Everything's been sorted into your results.`}
           </p>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 26 }}>
             <Button variant="primary" icon="arrowLeft" onClick={onBack}>

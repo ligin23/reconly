@@ -2,20 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sampleData, type FileMeta, type MissingTxn, type UserAddedEntry } from "@/lib/sample-data";
-import {
-  parseCsvDetailed,
-  inspectCsv,
-  type CsvColumnMap,
-  type CsvInspection,
-  type ParseResult,
-} from "@/lib/parser";
+import { inspectCsv } from "@/lib/parser";
 import { reconcile } from "@/lib/recon";
 import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
+import {
+  applyCompositeDecision,
+  applyMatchDecision,
+  restoreComposites,
+  restoreMatches,
+  reviewProgress,
+} from "@/lib/recon/decisions";
 import type {
   Match,
   Txn,
   BalanceProof,
-  MatchStatus,
   AnyCompositeMatch,
   ReconResult,
 } from "@/lib/recon/types";
@@ -27,13 +27,34 @@ import {
   type UploadFiles,
   type UploadSide,
 } from "@/components/screens/upload-screen";
-import { MappingScreen } from "@/components/screens/mapping-screen";
+import {
+  MappingScreen,
+  type FileImportConfig,
+  type MappingFile,
+} from "@/components/screens/mapping-screen";
+import { combineFiles, type CombinedImport, type ImportedFile } from "@/lib/import/combine";
+import {
+  EMPTY_DUPLICATE_STATE,
+  activeTxns,
+  detectDuplicates,
+  dismissGroup,
+  fileOverlaps,
+  initialDuplicateState,
+  restoreRows,
+  sanitizeDuplicateState,
+  setAsideRows,
+  unresolvedGroupCount,
+  type DuplicateState,
+} from "@/lib/import/duplicates";
+import { deriveVerdict } from "@/lib/recon/verdict";
+import { buildMonthReview } from "@/lib/review/months";
+import { verifyStatements } from "@/lib/review/statements";
 import { ProcessingScreen, type ReconCounts } from "@/components/screens/processing-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
 import { ReviewScreen, type ReviewDecision, type ReviewMeta } from "@/components/screens/review-screen";
 import { HistoryScreen } from "@/components/screens/history-screen";
 import { repository } from "@/lib/data/indexeddb-repository";
-import type { ReconciliationRecord } from "@/lib/data/repository";
+import type { ReconciliationRecord, SourceFileInfo } from "@/lib/data/repository";
 import { generateId, inferPeriod, formatPeriod, deriveStatus } from "@/lib/data/utils";
 import { downloadPdfReport } from "@/lib/export/pdf-report";
 import { downloadExcelWorksheet } from "@/lib/export/excel-worksheet";
@@ -242,6 +263,15 @@ function SaveDialog({
 }
 
 // ---- File size formatter -------------------------------------------
+/** Every imported row per side, in import order (set-aside rows included). */
+type ImportedRows = { bank: Txn[]; ledger: Txn[] };
+
+/** An uploaded file held in memory for this session. */
+type LoadedFile = { id: string; name: string; content: string; sample?: boolean };
+
+/** Upper bound on files per side (3 years of monthly exports). */
+const MAX_FILES_PER_SIDE = 36;
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -465,6 +495,7 @@ function ExportMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState<"idle" | "pdf" | "excel">("idle");
+  const [failed, setFailed] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -482,8 +513,14 @@ function ExportMenu({
   const run = async (kind: "pdf" | "excel") => {
     setOpen(false);
     setGenerating(kind);
+    setFailed(false);
     try {
       await (kind === "pdf" ? onPdf() : onExcel());
+    } catch (err) {
+      // A failed export must be visible — otherwise the button just resets
+      // and the user assumes a file was downloaded.
+      console.error(err);
+      setFailed(true);
     } finally {
       setGenerating("idle");
     }
@@ -494,6 +531,8 @@ function ExportMenu({
     ? "Generating PDF…"
     : generating === "excel"
     ? "Generating…"
+    : failed
+    ? "Export failed — try again"
     : "Export";
 
   return (
@@ -729,11 +768,13 @@ function TopBar({
 export function AppShell() {
   const [screen, setScreen] = useState<Screen>("upload");
   const [analyzed, setAnalyzed] = useState(false);
-  const [files, setFiles] = useState<UploadFiles>({ bank: null, ledger: null });
+  // Several files per side are allowed (e.g. one bank export per month).
+  const [files, setFiles] = useState<UploadFiles>({ bank: [], ledger: [] });
 
-  const fileContentsRef = useRef<{ bank: string | null; ledger: string | null }>({
-    bank: null,
-    ledger: null,
+  // File text lives in a ref (it can be megabytes — not render state).
+  const fileContentsRef = useRef<Record<UploadSide, LoadedFile[]>>({
+    bank: [],
+    ledger: [],
   });
 
   const [engineOutput, setEngineOutput] = useState<EngineOutput | null>(null);
@@ -743,12 +784,21 @@ export function AppShell() {
   // in-memory only — never carries over between reconciliations.
   const [copilotRunId, setCopilotRunId] = useState(0);
 
-  const [inspections, setInspections] = useState<{
-    bank: CsvInspection;
-    ledger: CsvInspection;
+  const [mappingFiles, setMappingFiles] = useState<MappingFile[] | null>(null);
+  const reconCacheRef = useRef<{
+    bankTxns: Txn[];
+    ledgerTxns: Txn[];
+    result: ReconResult;
+    sourceFiles: SourceFileInfo[];
+    imported: ImportedRows;
+    duplicateState: DuplicateState;
   } | null>(null);
-  const confirmedMapsRef = useRef<{ bank: CsvColumnMap; ledger: CsvColumnMap } | null>(null);
-  const reconCacheRef = useRef<{ bankTxns: Txn[]; ledgerTxns: Txn[]; result: ReconResult } | null>(null);
+  // Every row the user imported — including rows set aside as repeated.
+  // `engineOutput.bankTxns / ledgerTxns` are only the rows IN USE.
+  const [imported, setImported] = useState<ImportedRows | null>(null);
+  const [duplicateState, setDuplicateState] = useState<DuplicateState>(EMPTY_DUPLICATE_STATE);
+  // The files the CURRENT reconciliation was built from (persisted on save).
+  const [sourceFiles, setSourceFiles] = useState<SourceFileInfo[]>([]);
   const [reconCounts, setReconCounts] = useState<ReconCounts | null>(null);
 
   const [matches, setMatches] = useState<Match[]>([]);
@@ -819,6 +869,23 @@ export function AppShell() {
     );
   }, [matches, compositeMatches, userAddedEntries, acknowledgedBankIds, engineOutput]);
 
+  // Duplicate review — recomputed from the imported rows (deterministic),
+  // never from bank-vs-ledger: each side is checked on its own.
+  const duplicateGroups = useMemo(
+    () =>
+      imported
+        ? [...detectDuplicates("bank", imported.bank), ...detectDuplicates("ledger", imported.ledger)]
+        : [],
+    [imported]
+  );
+  const importOverlaps = useMemo(
+    () =>
+      imported
+        ? [...fileOverlaps("bank", imported.bank), ...fileOverlaps("ledger", imported.ledger)]
+        : [],
+    [imported]
+  );
+
   // Live balance proof: clearedSum updates as users accept/reject matches.
   // unexplainedDifference is immutable (bank total − ledger total), but
   // clearedSum tracks what's been confirmed so far.
@@ -860,13 +927,64 @@ export function AppShell() {
       dashboardData.counts.review
     : 0;
 
-  const reconciled = liveBalanceProof
-    ? liveBalanceProof.unexplainedDifference === 0 && openItemCount === 0
-    : false;
+  // The verdict keeps two things apart: whether the money agrees
+  // (financial) and whether possible duplicates still await a decision
+  // (data quality). "Fully reconciled" needs both; a flagged duplicate
+  // never changes a total or a confirmed match.
+  const unresolvedDuplicateGroups = useMemo(
+    () => unresolvedGroupCount(duplicateGroups, duplicateState),
+    [duplicateGroups, duplicateState]
+  );
+  const verdict = liveBalanceProof
+    ? deriveVerdict({
+        unexplainedDifference: liveBalanceProof.unexplainedDifference,
+        openItemCount,
+        unresolvedDuplicateGroups,
+      })
+    : null;
+  const reconciled = verdict?.reconciled ?? false;
 
   const unexplained = liveBalanceProof
     ? unexplainedCents(liveBalanceProof)
     : sampleData.unexplained;
+
+  // Month-by-month findings: a grouping of the ONE full-range
+  // reconciliation above — the engine is never run per month.
+  // Statement balance verification: each bank file against its own stated
+  // balances, using EVERY imported row (set-aside rows included — the
+  // duplicate review must not change what the original statement proves).
+  const statementReview = useMemo(
+    () => (engineOutput ? verifyStatements(imported?.bank ?? engineOutput.bankTxns, sourceFiles) : null),
+    [engineOutput, imported, sourceFiles]
+  );
+
+  const monthReview = useMemo(() => {
+    if (!engineOutput) return null;
+    return buildMonthReview({
+      statementReview: statementReview ?? undefined,
+      imported: imported ?? { bank: engineOutput.bankTxns, ledger: engineOutput.ledgerTxns },
+      bankTxns: engineOutput.bankTxns,
+      ledgerTxns: engineOutput.ledgerTxns,
+      matches,
+      compositeMatches,
+      addedBankIds: new Set(userAddedEntries.map((e) => e.txnId)),
+      acknowledgedLedgerIds: new Set(acknowledgedBankIds),
+      duplicateGroups,
+      duplicateState,
+      sourceFiles,
+    });
+  }, [
+    engineOutput,
+    imported,
+    matches,
+    compositeMatches,
+    userAddedEntries,
+    acknowledgedBankIds,
+    duplicateGroups,
+    duplicateState,
+    sourceFiles,
+    statementReview,
+  ]);
 
   // Current record (if this session has a saved record)
   const currentRecord = savedRecords.find((r) => r.id === currentRecordId) ?? null;
@@ -940,7 +1058,11 @@ export function AppShell() {
       file.type === "" ||
       ["text/csv", "text/plain", "application/csv", "application/vnd.ms-excel"].includes(file.type);
     if (!csvByName || !csvByType) {
-      setUploadError(`"${file.name}" doesn't look like a CSV file. Export your data as CSV and try again.`);
+      setUploadError(
+        /\.(xlsx|xlsm|xls)$/i.test(file.name)
+          ? `"${file.name}" is an Excel workbook. Save it as CSV first — see "Have an Excel file?" below.`
+          : `"${file.name}" doesn't look like a CSV file. Export your data as CSV and try again.`
+      );
       return;
     }
     if (file.size > MAX_UPLOAD_BYTES) {
@@ -956,17 +1078,57 @@ export function AppShell() {
     };
     reader.onload = (e) => {
       const content = (e.target?.result as string) ?? "";
-      fileContentsRef.current = { ...fileContentsRef.current, [side]: content };
-      const meta: FileMeta = { name: file.name, size: formatFileSize(file.size), rows: 0 };
-      setFiles((f) => ({ ...f, [side]: meta }));
-      setUsingSampleData(false); // a real file replaces the sample pair
+      // Real files replace the sample pair rather than joining it.
+      const existing = fileContentsRef.current[side].filter((f) => !f.sample);
+      const sideLabel = side === "bank" ? "bank statement" : "ledger";
+
+      if (existing.length >= MAX_FILES_PER_SIDE) {
+        setUploadError(
+          `"${file.name}" wasn't added — the ${sideLabel} side already has ${MAX_FILES_PER_SIDE} files, the most Reconly handles at once.`
+        );
+        return;
+      }
+      // The very same file picked twice is refused out loud. (Files that
+      // merely overlap in dates are NOT refused or trimmed — they are all
+      // kept, and the overlap is reported on the results screen.)
+      if (existing.some((f) => f.content === content)) {
+        setUploadError(
+          `"${file.name}" wasn't added — a file with exactly the same contents is already on the ${sideLabel} side.`
+        );
+        return;
+      }
+      // Two different files can share a name (downloads from different
+      // folders). Keep both, but give the second a distinct label so every
+      // transaction can still be traced to the right file.
+      let name = file.name;
+      for (let n = 2; existing.some((f) => f.name === name); n++) {
+        name = file.name.replace(/(\.[^.]*)?$/, ` (${n})$1`);
+      }
+      const loaded: LoadedFile = { id: generateId(), name, content };
+      fileContentsRef.current = { ...fileContentsRef.current, [side]: [...existing, loaded] };
+      const meta: FileMeta = { id: loaded.id, name, size: formatFileSize(file.size), rows: 0 };
+      setFiles((f) => ({
+        ...f,
+        [side]: [...f[side].filter((m) => existing.some((x) => x.id === m.id)), meta],
+      }));
+      // A real file on one side means the other side's sample file goes too.
+      const other: UploadSide = side === "bank" ? "ledger" : "bank";
+      if (fileContentsRef.current[other].some((f) => f.sample)) {
+        fileContentsRef.current = { ...fileContentsRef.current, [other]: [] };
+        setFiles((f) => ({ ...f, [other]: [] }));
+      }
+      setUsingSampleData(false);
     };
     reader.readAsText(file);
   };
 
-  const removeFile = (side: UploadSide) => {
-    fileContentsRef.current = { ...fileContentsRef.current, [side]: null };
-    setFiles((f) => ({ ...f, [side]: null }));
+  const removeFile = (side: UploadSide, file: FileMeta) => {
+    fileContentsRef.current = {
+      ...fileContentsRef.current,
+      [side]: fileContentsRef.current[side].filter((f) => f.id !== file.id),
+    };
+    setFiles((f) => ({ ...f, [side]: f[side].filter((m) => m.id !== file.id) }));
+    setUploadError(null);
   };
 
   const useSample = () => {
@@ -975,25 +1137,55 @@ export function AppShell() {
       fetch("/samples/ledger-june2026.csv").then((r) => r.text()),
     ])
       .then(([bankContent, ledgerContent]) => {
-        fileContentsRef.current = { bank: bankContent, ledger: ledgerContent };
-        setFiles({ bank: sampleData.files.bank, ledger: sampleData.files.ledger });
+        const bank: LoadedFile = { id: "sample-bank", name: sampleData.files.bank.name, content: bankContent, sample: true };
+        const ledger: LoadedFile = { id: "sample-ledger", name: sampleData.files.ledger.name, content: ledgerContent, sample: true };
+        fileContentsRef.current = { bank: [bank], ledger: [ledger] };
+        setFiles({
+          bank: [{ ...sampleData.files.bank, id: bank.id }],
+          ledger: [{ ...sampleData.files.ledger, id: ledger.id }],
+        });
+        setUploadError(null);
         setUsingSampleData(true);
       })
       .catch(console.error);
   };
 
   const startAnalysis = () => {
-    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
-    if (!bankContent || !ledgerContent) return;
+    const { bank, ledger } = fileContentsRef.current;
+    if (bank.length === 0 || ledger.length === 0) return;
     setMappingError(null);
-    setInspections({ bank: inspectCsv(bankContent), ledger: inspectCsv(ledgerContent) });
+    const inspect = (side: UploadSide) => (f: LoadedFile): MappingFile => ({
+      id: f.id,
+      side,
+      name: f.name,
+      inspection: inspectCsv(f.content),
+    });
+    setMappingFiles([...bank.map(inspect("bank")), ...ledger.map(inspect("ledger"))]);
     setScreen("mapping");
   };
 
+  /** The user picked a different header row for one file — re-read its titles. */
+  const changeHeaderRow = (fileId: string, headerRow: number) => {
+    const loaded = [...fileContentsRef.current.bank, ...fileContentsRef.current.ledger].find(
+      (f) => f.id === fileId
+    );
+    if (!loaded) return;
+    setMappingError(null);
+    setMappingFiles((prev) =>
+      prev
+        ? prev.map((f) =>
+            f.id === fileId
+              ? { ...f, inspection: inspectCsv(loaded.content, 3, { headerRow }) }
+              : f
+          )
+        : prev
+    );
+  };
+
   /** Zero parsed rows means the mapping or file is wrong — explain why. */
-  const describeParseFailure = (label: string, parsed: ParseResult): string | null => {
-    if (parsed.txns.length > 0) return null;
-    const d = parsed.diagnostics;
+  const describeParseFailure = (label: string, file: ImportedFile): string | null => {
+    if (file.rowCount > 0) return null;
+    const d = file.diagnostics;
     const detail =
       d.csvErrors[0] ??
       d.warnings[0] ??
@@ -1003,8 +1195,8 @@ export function AppShell() {
   };
 
   /** Non-fatal diagnostics the user must see before trusting the results. */
-  const collectParseNotices = (label: string, parsed: ParseResult): string[] => {
-    const d = parsed.diagnostics;
+  const collectParseNotices = (label: string, file: ImportedFile): string[] => {
+    const d = file.diagnostics;
     const notices: string[] = [];
     if (d.issueCount > 0) {
       const examples = d.issues
@@ -1028,32 +1220,104 @@ export function AppShell() {
     return notices;
   };
 
-  const confirmMapping = (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => {
-    confirmedMapsRef.current = maps;
-    const { bank: bankContent, ledger: ledgerContent } = fileContentsRef.current;
-    if (bankContent && ledgerContent) {
-      const bankParsed = parseCsvDetailed(bankContent, "bank", maps.bank);
-      const ledgerParsed = parseCsvDetailed(ledgerContent, "ledger", maps.ledger);
+  const confirmMapping = (configs: FileImportConfig[]) => {
+    const importSide = (side: UploadSide): CombinedImport | null => {
+      const loaded = fileContentsRef.current[side];
+      const inputs = loaded.flatMap((f) => {
+        const c = configs.find((x) => x.fileId === f.id);
+        return c ? [{ name: f.name, content: f.content, map: c.map, headerRow: c.headerRow }] : [];
+      });
+      // Every uploaded file must have a confirmed mapping — never drop one.
+      if (inputs.length === 0 || inputs.length !== loaded.length) return null;
+      return combineFiles(side, inputs);
+    };
+    const bankImport = importSide("bank");
+    const ledgerImport = importSide("ledger");
+    if (bankImport && ledgerImport) {
+      // With one file per side the wording is exactly what it always was;
+      // with several, every message names the file it is about.
+      const sideName = { bank: "bank statement", ledger: "ledger" } as const;
+      const sideTitle = { bank: "Bank statement", ledger: "Ledger" } as const;
+      const all = [bankImport, ledgerImport];
+      const failureLabel = (imp: CombinedImport, f: ImportedFile) =>
+        imp.files.length > 1 ? `${sideName[f.side]} file "${f.name}"` : sideName[f.side];
+      const noticeLabel = (imp: CombinedImport, f: ImportedFile) =>
+        imp.files.length > 1 ? `${sideTitle[f.side]} · ${f.name}` : sideTitle[f.side];
 
-      // A mapping that yields zero transactions must never flow into the
-      // engine — reconcile([], []) reports "fully reconciled" over nothing.
-      const failure =
-        describeParseFailure("bank statement", bankParsed) ??
-        describeParseFailure("ledger", ledgerParsed);
+      // A file that yields zero transactions must never flow into the
+      // engine — reconcile([], []) reports "fully reconciled" over nothing,
+      // and with several files a silently-empty month would look like a
+      // clean one.
+      let failure: string | null = null;
+      for (const imp of all) {
+        for (const f of imp.files) {
+          failure = failure ?? describeParseFailure(failureLabel(imp, f), f);
+        }
+      }
       if (failure) {
         setMappingError(failure);
         return; // stay on the mapping screen
       }
       setMappingError(null);
-      setParseNotices([
-        ...collectParseNotices("Bank statement", bankParsed),
-        ...collectParseNotices("Ledger", ledgerParsed),
-      ]);
 
-      const bankTxns = bankParsed.txns;
-      const ledgerTxns = ledgerParsed.txns;
+      const notices: string[] = [];
+      for (const imp of all) {
+        for (const f of imp.files) notices.push(...collectParseNotices(noticeLabel(imp, f), f));
+        for (const o of imp.overlaps) {
+          const range =
+            o.start === o.end ? formatPeriod(o.start, o.end).split(" – ")[1] : formatPeriod(o.start, o.end);
+          notices.push(
+            `${sideTitle[o.side]}: "${o.fileA}" and "${o.fileB}" both cover ${range}. Nothing was removed — rows that appear in both files are listed under "Repeated rows in your files", where you can see which were set aside and which need your decision.`
+          );
+        }
+      }
+
+      // Duplicate detection runs per side, on everything imported. Only
+      // copies the files themselves prove (transaction ID, running balance,
+      // or reference + description) are set aside; they stay in the import
+      // and can be restored. The engine then sees the rows in use.
+      const importedRows: ImportedRows = { bank: bankImport.txns, ledger: ledgerImport.txns };
+      const groups = [
+        ...detectDuplicates("bank", importedRows.bank),
+        ...detectDuplicates("ledger", importedRows.ledger),
+      ];
+      const dupState = initialDuplicateState(groups, new Date().toISOString());
+      if (dupState.setAside.length > 0) {
+        const n = dupState.setAside.length;
+        notices.push(
+          `${n} repeated ${n === 1 ? "row was" : "rows were"} set aside automatically because your files prove ${n === 1 ? "it is a copy" : "they are copies"} of ${n === 1 ? "a row" : "rows"} already imported. ${n === 1 ? "It is" : "They are"} not counted below; see "Repeated rows in your files" to review or restore ${n === 1 ? "it" : "them"}.`
+        );
+      }
+      setParseNotices(notices);
+
+      const bankTxns = activeTxns(importedRows.bank, dupState);
+      const ledgerTxns = activeTxns(importedRows.ledger, dupState);
       const result = reconcile(bankTxns, ledgerTxns);
-      reconCacheRef.current = { bankTxns, ledgerTxns, result };
+      const importedFiles: SourceFileInfo[] = all.flatMap((imp) =>
+        imp.files.map((f) => ({
+          side: f.side,
+          name: f.name,
+          rows: f.rowCount,
+          headerRow: f.headerRow,
+          periodStart: f.coverage?.start ?? null,
+          periodEnd: f.coverage?.end ?? null,
+          statementStart: f.diagnostics.statementPeriod?.start ?? null,
+          statementEnd: f.diagnostics.statementPeriod?.end ?? null,
+          skippedRows: f.diagnostics.issueCount,
+          invalidDateRows: f.diagnostics.invalidDateRows,
+          statementOpening: f.diagnostics.statement.opening,
+          statementClosing: f.diagnostics.statement.closing,
+          statementAmbiguities: f.diagnostics.statement.ambiguities,
+        }))
+      );
+      reconCacheRef.current = {
+        bankTxns,
+        ledgerTxns,
+        result,
+        sourceFiles: importedFiles,
+        imported: importedRows,
+        duplicateState: dupState,
+      };
       const autoMatched = result.matches.filter((m) => m.status === "accepted").length;
       const differences =
         result.missingFromBooks.length +
@@ -1073,12 +1337,16 @@ export function AppShell() {
       setScreen("dashboard");
       return;
     }
-    const { bankTxns, ledgerTxns, result } = cached;
+    const { bankTxns, ledgerTxns, result, sourceFiles: imported } = cached;
 
-    setFiles((f) => ({
-      bank: f.bank ? { ...f.bank, rows: bankTxns.length } : null,
-      ledger: f.ledger ? { ...f.ledger, rows: ledgerTxns.length } : null,
-    }));
+    const withRows = (side: UploadSide) => (m: FileMeta): FileMeta => ({
+      ...m,
+      rows: imported.find((f) => f.side === side && f.name === m.name)?.rows ?? m.rows,
+    });
+    setFiles((f) => ({ bank: f.bank.map(withRows("bank")), ledger: f.ledger.map(withRows("ledger")) }));
+    setSourceFiles(imported);
+    setImported(cached.imported);
+    setDuplicateState(cached.duplicateState);
     setEngineOutput({
       bankTxns,
       ledgerTxns,
@@ -1105,12 +1373,14 @@ export function AppShell() {
   }, []);
 
   const startOver = () => {
-    fileContentsRef.current = { bank: null, ledger: null };
-    confirmedMapsRef.current = null;
+    fileContentsRef.current = { bank: [], ledger: [] };
     reconCacheRef.current = null;
     setReconCounts(null);
-    setFiles({ bank: null, ledger: null });
-    setInspections(null);
+    setFiles({ bank: [], ledger: [] });
+    setMappingFiles(null);
+    setSourceFiles([]);
+    setImported(null);
+    setDuplicateState(EMPTY_DUPLICATE_STATE);
     setEngineOutput(null);
     setMatches([]);
     setCompositeMatches([]);
@@ -1127,49 +1397,23 @@ export function AppShell() {
   };
 
   // ---- Review decision handler (one-to-one + composite) ---------------
-  const decide = (decision: ReviewDecision, meta?: ReviewMeta) => {
+  // The decision logic itself lives in lib/recon/decisions (pure, tested).
+  // `itemId` is the item the user was looking at when they clicked; the
+  // review card animates out before this fires, so acting on "whatever is
+  // first in the queue now" could apply the decision to a different item.
+  const decide = (decision: ReviewDecision, meta?: ReviewMeta, itemId?: string) => {
     const currentReviewItems = dashboardData?.reviewItems ?? [];
-    const current = currentReviewItems[0];
+    const current = itemId
+      ? currentReviewItems.find((i) => i.id === itemId)
+      : currentReviewItems[0];
     if (!current) return;
-    // Route composite items to the composite handler
     if ("matchType" in current && current.matchType === "composite") {
-      if (decision === "manual") return; // composites don't support manual
-      decideComposite(current.id, decision, meta?.pickedCombination);
+      setCompositeMatches((cs) =>
+        applyCompositeDecision(cs, current.id, decision, meta?.pickedCombination)
+      );
       return;
     }
-    const newStatus: MatchStatus =
-      decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "manual";
-    setMatches((ms) =>
-      ms.map((m) => (m.id === current.id ? { ...m, status: newStatus } : m))
-    );
-  };
-
-  // ---- Composite review decision handler ---------------------------
-  // Called by the composite review UI (Phase 3). For unambiguous composites,
-  // accept/reject works like one-to-one. Ambiguous accept additionally requires
-  // a pickedCombination to resolve which ledger IDs are confirmed.
-  const decideComposite = (
-    compositeId: string,
-    decision: "accept" | "reject",
-    pickedCombination?: string[] // required when accepting an ambiguous composite
-  ) => {
-    setCompositeMatches((cs) =>
-      cs.map((c): AnyCompositeMatch => {
-        if (c.id !== compositeId) return c;
-        if (decision === "reject") return { ...c, status: "rejected" } as AnyCompositeMatch;
-        // Accepting: if ambiguous and a combination was picked, narrow ledgerTxnIds
-        if (c.ambiguous && pickedCombination) {
-          return {
-            ...c,
-            status: "accepted",
-            ledgerTxnIds: pickedCombination,
-            ambiguous: false,
-            allCombinations: null,
-          } as AnyCompositeMatch;
-        }
-        return { ...c, status: "accepted" } as AnyCompositeMatch;
-      })
-    );
+    setMatches((ms) => applyMatchDecision(ms, current.id, decision));
   };
 
   // ---- Missing-item resolution handlers ----------------------------
@@ -1211,20 +1455,64 @@ export function AppShell() {
     setAcknowledgedBankIds((prev) => prev.filter((id) => id !== txnId));
   };
 
+  // ---- Duplicate review handlers ------------------------------------
+  // Setting a row aside or restoring it changes which rows are in use, so
+  // the (unchanged) engine is run again over the rows in use. Decisions the
+  // user already made are kept wherever the same pairing still exists.
+  const applyDuplicateState = (next: DuplicateState) => {
+    if (!imported || next === duplicateState) return;
+    const bankTxns = activeTxns(imported.bank, next);
+    const ledgerTxns = activeTxns(imported.ledger, next);
+    if (bankTxns.length === 0 || ledgerTxns.length === 0) return; // never empty a side
+    const result = reconcile(bankTxns, ledgerTxns);
+    const bankIds = new Set(bankTxns.map((t) => t.id));
+    const ledgerIds = new Set(ledgerTxns.map((t) => t.id));
+    setEngineOutput({
+      bankTxns,
+      ledgerTxns,
+      baseMissingFromBooks: result.missingFromBooks,
+      baseMissingFromBank: result.missingFromBank,
+      balanceProof: result.balanceProof,
+    });
+    setMatches((current) => restoreMatches(result.matches, current));
+    setCompositeMatches((current) => restoreComposites(result.compositeMatches, current));
+    setUserAddedEntries((prev) => prev.filter((e) => bankIds.has(e.txnId)));
+    setAcknowledgedBankIds((prev) => prev.filter((id) => ledgerIds.has(id)));
+    setDuplicateState(next);
+  };
+
+  const handleSetAsideDuplicates = (txnIds: string[]) =>
+    applyDuplicateState(setAsideRows(duplicateState, txnIds, "user", new Date().toISOString()));
+  const handleRestoreDuplicates = (txnIds: string[]) =>
+    applyDuplicateState(restoreRows(duplicateState, txnIds, new Date().toISOString()));
+  // "They're separate" changes no totals — it only records the decision.
+  const handleDismissDuplicateGroup = (groupId: string, dismissed: boolean) =>
+    setDuplicateState((s) => dismissGroup(s, groupId, dismissed, new Date().toISOString()));
+
   // ---- Persistence handlers ----------------------------------------
 
   /** Re-open a saved reconciliation: restore engine state and show dashboard. */
   const openFromHistory = (record: ReconciliationRecord) => {
     // Re-run the deterministic engine to get the base unmatched lists,
     // then overlay the saved match statuses on top.
-    const result = reconcile(record.bankTxns, record.ledgerTxns);
-    const restoredMatches = result.matches.map((m) => {
-      const saved = record.matches.find((s) => s.id === m.id);
-      return saved ? { ...m, status: saved.status } : m;
-    });
+    // A record stores EVERY imported row plus which were set aside. Records
+    // saved before duplicate detection existed have no duplicate state, so
+    // nothing is set aside on open — a saved reconciliation's totals never
+    // change just because it was reopened in a newer version.
+    const importedRows: ImportedRows = { bank: record.bankTxns, ledger: record.ledgerTxns };
+    const dupState = sanitizeDuplicateState(
+      record.duplicateState,
+      new Set([...record.bankTxns, ...record.ledgerTxns].map((t) => t.id))
+    );
+    const activeBank = activeTxns(importedRows.bank, dupState);
+    const activeLedger = activeTxns(importedRows.ledger, dupState);
+    const result = reconcile(activeBank, activeLedger);
+    const restoredMatches = restoreMatches(result.matches, record.matches);
+    setImported(importedRows);
+    setDuplicateState(dupState);
     setEngineOutput({
-      bankTxns: record.bankTxns,
-      ledgerTxns: record.ledgerTxns,
+      bankTxns: activeBank,
+      ledgerTxns: activeLedger,
       baseMissingFromBooks: result.missingFromBooks,
       baseMissingFromBank: result.missingFromBank,
       balanceProof: result.balanceProof,
@@ -1232,14 +1520,12 @@ export function AppShell() {
     setCopilotRunId((n) => n + 1);
     setMatches(restoredMatches);
     // Restore saved composite decisions if available; otherwise use fresh engine output.
-    const savedComposites = record.compositeMatches ?? [];
-    const restoredComposites = result.compositeMatches.map((c): AnyCompositeMatch => {
-      const saved = savedComposites.find((s) => s.id === c.id);
-      return saved ? ({ ...c, status: saved.status } as AnyCompositeMatch) : c;
-    });
-    setCompositeMatches(restoredComposites);
+    setCompositeMatches(
+      restoreComposites(result.compositeMatches, record.compositeMatches ?? [])
+    );
     setUserAddedEntries(record.userAddedEntries ?? []);
     setAcknowledgedBankIds(record.acknowledgedBankIds ?? []);
+    setSourceFiles(record.sourceFiles ?? []);
     setCurrentRecordId(record.id);
     setAnalyzed(true);
     setScreen("dashboard");
@@ -1266,16 +1552,20 @@ export function AppShell() {
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
         matches,
         compositeMatches,
-        openItemCount
+        openItemCount,
+        unresolvedDuplicateGroups
       ),
       unexplainedDifference:
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
-      bankTxns: engineOutput.bankTxns,
-      ledgerTxns: engineOutput.ledgerTxns,
+      // Every imported row is stored; `duplicateState` says which are set aside.
+      bankTxns: imported?.bank ?? engineOutput.bankTxns,
+      ledgerTxns: imported?.ledger ?? engineOutput.ledgerTxns,
       matches,
       compositeMatches,
       userAddedEntries,
       acknowledgedBankIds,
+      sourceFiles,
+      duplicateState,
     };
     setSaveStatus("saving");
     repository
@@ -1310,16 +1600,20 @@ export function AppShell() {
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
         matches,
         compositeMatches,
-        openItemCount
+        openItemCount,
+        unresolvedDuplicateGroups
       ),
       unexplainedDifference:
         liveBalanceProof?.unexplainedDifference ?? engineOutput.balanceProof.unexplainedDifference,
-      bankTxns: engineOutput.bankTxns,
-      ledgerTxns: engineOutput.ledgerTxns,
+      // Every imported row is stored; `duplicateState` says which are set aside.
+      bankTxns: imported?.bank ?? engineOutput.bankTxns,
+      ledgerTxns: imported?.ledger ?? engineOutput.ledgerTxns,
       matches,
       compositeMatches,
       userAddedEntries,
       acknowledgedBankIds,
+      sourceFiles,
+      duplicateState,
     };
     setSaveStatus("saving");
     repository
@@ -1363,6 +1657,19 @@ export function AppShell() {
       compositeMatches,
       userAddedEntries,
       acknowledgedBankIds,
+      ...(monthReview && statementReview
+        ? { review: { months: monthReview, statements: statementReview } }
+        : {}),
+      ...(imported
+        ? {
+            duplicates: {
+              allBankTxns: imported.bank,
+              allLedgerTxns: imported.ledger,
+              groups: duplicateGroups,
+              state: duplicateState,
+            },
+          }
+        : {}),
     };
   };
 
@@ -1411,6 +1718,9 @@ export function AppShell() {
       balanceProof: liveBalanceProof,
       reconciled,
       periodLabel,
+      duplicatesSetAside: duplicateState.setAside.length,
+      verdict: verdict ?? undefined,
+      duplicateGroupCount: duplicateGroups.length,
     });
   }, [
     engineOutput,
@@ -1421,6 +1731,9 @@ export function AppShell() {
     acknowledgedBankIds,
     reconciled,
     periodLabel,
+    duplicateState,
+    verdict,
+    duplicateGroups,
   ]);
 
   // Shown only on the results screens (dashboard/review) of an analyzed run.
@@ -1479,10 +1792,10 @@ export function AppShell() {
               />
             )}
 
-            {screen === "mapping" && inspections && (
+            {screen === "mapping" && mappingFiles && (
               <MappingScreen
-                bank={inspections.bank}
-                ledger={inspections.ledger}
+                files={mappingFiles}
+                onHeaderRowChange={changeHeaderRow}
                 onBack={() => setScreen("upload")}
                 onConfirm={confirmMapping}
                 errorMessage={mappingError}
@@ -1539,6 +1852,9 @@ export function AppShell() {
               <DashboardScreen
                 counts={dashboardData.counts}
                 reconciled={reconciled}
+                verdict={verdict ?? undefined}
+                monthReview={monthReview ?? undefined}
+                statementReview={statementReview ?? undefined}
                 unexplained={unexplained}
                 balanceProof={liveBalanceProof ?? undefined}
                 reviewItems={dashboardData.reviewItems}
@@ -1553,17 +1869,26 @@ export function AppShell() {
                 onRemoveAdded={handleRemoveAdded}
                 onAcknowledgeMissingBank={handleAcknowledgeBank}
                 onUnacknowledgeMissingBank={handleUnacknowledgeBank}
+                duplicates={
+                  imported
+                    ? {
+                        groups: duplicateGroups,
+                        state: duplicateState,
+                        imported,
+                        overlaps: importOverlaps,
+                        onSetAside: handleSetAsideDuplicates,
+                        onRestore: handleRestoreDuplicates,
+                        onDismiss: handleDismissDuplicateGroup,
+                      }
+                    : undefined
+                }
               />
             )}
 
             {screen === "review" && dashboardData && (
               <ReviewScreen
                 queue={dashboardData.reviewItems}
-                total={
-                  matches.filter((m) => m.type === "near" || m.type === "fuzzy")
-                    .length +
-                  compositeMatches.filter((c) => c.status === "suggested").length
-                }
+                total={reviewProgress(matches, compositeMatches).total}
                 onDecide={decide}
                 onBack={() => setScreen("dashboard")}
               />

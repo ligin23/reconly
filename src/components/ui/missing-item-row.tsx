@@ -11,6 +11,8 @@ type MissingItemRowTxn = {
   desc: string;
   amount: number;
   type: TxnType;
+  /** Provenance, e.g. "bank-march.csv · row 42". */
+  source?: string;
 };
 
 type MissingItemRowProps = {
@@ -67,6 +69,16 @@ export function MissingItemRow({
         <span style={{ display: "block", fontSize: 12, color: "var(--ink-3)" }}>
           {hint}
         </span>
+        {tx.source && (
+          <span
+            className="mono"
+            data-testid="txn-source"
+            title="The file and row this transaction was read from"
+            style={{ display: "block", fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}
+          >
+            From {tx.source}
+          </span>
+        )}
       </span>
 
       <span style={{ fontSize: 14.5, textAlign: "right" }}>

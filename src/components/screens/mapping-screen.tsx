@@ -108,6 +108,13 @@ function Select({
         cursor: "pointer",
       }}
     >
+      {/* A value that isn't one of this file's columns must look unset —
+          without this the browser shows the first column as if it were chosen. */}
+      {!options.includes(value) && !(allowNone && value === NONE) && (
+        <option value={value} disabled>
+          — choose a column —
+        </option>
+      )}
       {allowNone && <option value={NONE}>— none —</option>}
       {options.map((o) => (
         <option key={o} value={o}>
@@ -222,19 +229,161 @@ function PreviewTable({ draft, sampleRows }: { draft: DraftMap; sampleRows: Reco
   );
 }
 
-// ---- One side (bank or ledger) --------------------------------------
+// ---- Files, groups and the header-row picker -------------------------
 
-function SideCard({
-  side,
-  inspection,
+/** One uploaded file as the mapping screen sees it. */
+export type MappingFile = {
+  id: string;
+  side: "bank" | "ledger";
+  name: string;
+  /** Inspection at the file's CURRENT header row. */
+  inspection: CsvInspection;
+};
+
+/** What the user confirmed for one file. */
+export type FileImportConfig = {
+  fileId: string;
+  map: CsvColumnMap;
+  headerRow: number;
+};
+
+/**
+ * Files on the same side whose column titles are identical share one
+ * mapping — twelve monthly exports from the same bank are mapped once.
+ * Files with different columns each get their own card; nothing is assumed
+ * to line up just because it was uploaded together.
+ */
+type Group = { key: string; side: "bank" | "ledger"; files: MappingFile[] };
+
+function groupFiles(files: MappingFile[]): Group[] {
+  const groups: Group[] = [];
+  for (const f of files) {
+    const key = `${f.side}\u0000${f.inspection.headers.join("\u0001")}`;
+    const existing = groups.find((g) => g.key === key);
+    if (existing) existing.files.push(f);
+    else groups.push({ key, side: f.side, files: [f] });
+  }
+  return groups;
+}
+
+function HeaderRowPicker({
+  file,
+  onHeaderRowChange,
+}: {
+  file: MappingFile;
+  onHeaderRowChange: (fileId: string, headerRow: number) => void;
+}) {
+  const { headerRow, rawLines, suggestedHeaderRow, headerWarning } = file.inspection;
+  const preview = (line: string) => (line.length > 44 ? `${line.slice(0, 43)}…` : line || "(blank line)");
+  return (
+    <div
+      data-testid="mapping-file"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--line)",
+        borderRadius: "var(--r-sm, 8px)",
+      }}
+    >
+      <div
+        className="mono"
+        style={{
+          fontSize: 12.5,
+          fontWeight: 600,
+          color: "var(--ink)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {file.name}
+      </div>
+      <label style={{ display: "grid", gridTemplateColumns: "auto 1fr", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 12, color: "var(--ink-2)", whiteSpace: "nowrap" }}>
+          Column titles are on
+        </span>
+        <select
+          data-testid="header-row-select"
+          value={headerRow}
+          onChange={(e) => onHeaderRowChange(file.id, Number(e.target.value))}
+          style={{
+            width: "100%",
+            minWidth: 0,
+            padding: "6px 8px",
+            fontSize: 12,
+            fontFamily: "var(--font-mono, ui-monospace, monospace)",
+            background: "var(--surface)",
+            border: "1px solid var(--line)",
+            borderRadius: "var(--r-sm, 8px)",
+            color: "var(--ink)",
+            cursor: "pointer",
+          }}
+        >
+          {rawLines.map((line, i) => (
+            <option key={i} value={i + 1}>
+              Row {i + 1}: {preview(line)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {suggestedHeaderRow !== null && (
+        <div
+          data-testid="header-row-suggestion"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            fontSize: 12,
+            color: "var(--warn-ink, #7a5b00)",
+          }}
+        >
+          <span>
+            Row {headerRow} doesn&apos;t look like column titles — row {suggestedHeaderRow} does.
+          </span>
+          <button
+            type="button"
+            data-testid="use-suggested-header"
+            onClick={() => onHeaderRowChange(file.id, suggestedHeaderRow)}
+            className="btn btn--ghost btn--sm"
+            style={{
+              flex: "none",
+              fontWeight: 600,
+              border: "1px solid var(--line)",
+              background: "var(--surface)",
+            }}
+          >
+            Use row {suggestedHeaderRow}
+          </button>
+        </div>
+      )}
+      {headerWarning && (
+        <div data-testid="header-row-warning" style={{ fontSize: 12, color: "var(--bad, #b3261e)" }}>
+          {headerWarning}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- One group of same-shaped files ----------------------------------
+
+function GroupCard({
+  group,
   draft,
   onChange,
+  onHeaderRowChange,
 }: {
-  side: "bank" | "ledger";
-  inspection: CsvInspection;
+  group: Group;
   draft: DraftMap;
   onChange: (d: DraftMap) => void;
+  onHeaderRowChange: (fileId: string, headerRow: number) => void;
 }) {
+  const { side } = group;
+  const inspection = group.files[0].inspection;
   const title = side === "bank" ? "Bank statement" : "Ledger";
   const icon = side === "bank" ? "bank" : "book";
   const headers = inspection.headers;
@@ -258,9 +407,17 @@ function SideCard({
         <div>
           <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
           <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-            {headers.length} columns detected
+            {group.files.length > 1
+              ? `${group.files.length} files with the same columns · mapped once`
+              : `${headers.length} columns detected`}
           </div>
         </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {group.files.map((f) => (
+          <HeaderRowPicker key={f.id} file={f} onHeaderRowChange={onHeaderRowChange} />
+        ))}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -364,6 +521,7 @@ function SideCard({
           style={{ color: "var(--ink-3)", marginBottom: 6 }}
         >
           Preview · first {inspection.sampleRows.length} rows
+          {group.files.length > 1 ? ` of ${group.files[0].name}` : ""}
         </div>
         <PreviewTable draft={draft} sampleRows={inspection.sampleRows} />
       </div>
@@ -374,26 +532,57 @@ function SideCard({
 // ---- Screen ---------------------------------------------------------
 
 export type MappingScreenProps = {
-  bank: CsvInspection;
-  ledger: CsvInspection;
+  files: MappingFile[];
+  /** Re-inspect a file with a different header row (lifted to the shell). */
+  onHeaderRowChange: (fileId: string, headerRow: number) => void;
   onBack: () => void;
-  onConfirm: (maps: { bank: CsvColumnMap; ledger: CsvColumnMap }) => void;
+  onConfirm: (configs: FileImportConfig[]) => void;
   /** Parse failure from the previous confirm attempt (e.g. zero rows parsed). */
   errorMessage?: string | null;
 };
 
-export function MappingScreen({ bank, ledger, onBack, onConfirm, errorMessage }: MappingScreenProps) {
-  const [bankDraft, setBankDraft] = useState<DraftMap>(() => detectedToDraft(bank.detected));
-  const [ledgerDraft, setLedgerDraft] = useState<DraftMap>(() => detectedToDraft(ledger.detected));
+export function MappingScreen({ files, onHeaderRowChange, onBack, onConfirm, errorMessage }: MappingScreenProps) {
+  const groups = useMemo(() => groupFiles(files), [files]);
 
-  const bankProblem = draftProblem(bankDraft, bank.headers);
-  const ledgerProblem = draftProblem(ledgerDraft, ledger.headers);
-  const problem = bankProblem
-    ? `Bank statement: ${bankProblem}`
-    : ledgerProblem
-      ? `Ledger: ${ledgerProblem}`
-      : null;
+  // Drafts are keyed by side + exact column titles. Picking a different
+  // header row changes the titles, so that file falls into a fresh group
+  // whose draft starts from what is detected in the NEW titles — a mapping
+  // made against the old titles is never carried over.
+  const [drafts, setDrafts] = useState<Record<string, DraftMap>>({});
+  const draftFor = (g: Group): DraftMap =>
+    drafts[g.key] ?? detectedToDraft(g.files[0].inspection.detected);
+
+  const multiple = files.length > 2;
+  const problem = (() => {
+    for (const g of groups) {
+      const sideLabel = g.side === "bank" ? "Bank statement" : "Ledger";
+      const label = multiple ? `${sideLabel} (${g.files.map((f) => f.name).join(", ")})` : sideLabel;
+      const headerless = g.files.find((f) => f.inspection.headerWarning);
+      if (headerless) {
+        return `${multiple ? `${sideLabel} (${headerless.name})` : sideLabel}: row ${headerless.inspection.headerRow} looks like a transaction, not column titles`;
+      }
+      const p = draftProblem(draftFor(g), g.files[0].inspection.headers);
+      if (p) return `${label}: ${p}`;
+    }
+    return null;
+  })();
   const ready = problem === null;
+
+  const bankGroups = groups.filter((g) => g.side === "bank");
+  const ledgerGroups = groups.filter((g) => g.side === "ledger");
+  const column = (gs: Group[]) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
+      {gs.map((g) => (
+        <GroupCard
+          key={g.key}
+          group={g}
+          draft={draftFor(g)}
+          onChange={(d) => setDrafts((prev) => ({ ...prev, [g.key]: d }))}
+          onHeaderRowChange={onHeaderRowChange}
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", padding: "12px 8px 40px" }}>
@@ -427,9 +616,9 @@ export function MappingScreen({ bank, ledger, onBack, onConfirm, errorMessage }:
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <SideCard side="bank" inspection={bank} draft={bankDraft} onChange={setBankDraft} />
-        <SideCard side="ledger" inspection={ledger} draft={ledgerDraft} onChange={setLedgerDraft} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" }}>
+        {column(bankGroups)}
+        {column(ledgerGroups)}
       </div>
 
       <div
@@ -465,10 +654,15 @@ export function MappingScreen({ bank, ledger, onBack, onConfirm, errorMessage }:
             iconRight="arrowRight"
             data-testid="confirm-mapping-btn"
             onClick={() =>
-              onConfirm({
-                bank: draftToMap(bankDraft),
-                ledger: draftToMap(ledgerDraft),
-              })
+              onConfirm(
+                groups.flatMap((g) =>
+                  g.files.map((f) => ({
+                    fileId: f.id,
+                    map: draftToMap(draftFor(g)),
+                    headerRow: f.inspection.headerRow,
+                  }))
+                )
+              )
             }
           >
             Looks good — continue

@@ -6,6 +6,7 @@
 // ============================================================
 
 import { enrichReasons } from "./engine";
+import { sourceLabel } from "@/lib/import/provenance";
 import type { Match, Txn, BalanceProof, AnyCompositeMatch } from "./types";
 import type {
   ReviewItem,
@@ -60,7 +61,24 @@ export function toMissingTxn(txn: Txn, source: "bank" | "ledger"): MissingTxn {
     source === "bank"
       ? "This transaction is on your bank statement but doesn't have a matching entry in your records yet."
       : "This is in your records but your bank hasn't processed it yet — usually just a matter of timing.";
-  return { ...base, txnId: txn.id, hint };
+  const from = sourceLabel(txn);
+  return { ...base, txnId: txn.id, hint, ...(from ? { source: from } : {}) };
+}
+
+/** `{ source }` when the transaction knows its file / row, else nothing. */
+function withSource(txn: Txn): { source?: string } {
+  const from = sourceLabel(txn);
+  return from ? { source: from } : {};
+}
+
+/** One line saying where both sides of a match came from. */
+function matchDetail(bank: Txn, ledger: Txn[]): string | undefined {
+  const b = sourceLabel(bank);
+  const l = ledger.map((t) => sourceLabel(t)).filter((x): x is string => Boolean(x));
+  if (!b && l.length === 0) return undefined;
+  const records =
+    ledger.length > 1 ? `${ledger.length} entries (${l.join("; ")})` : l[0] ?? "source not recorded";
+  return `Bank: ${b ?? "source not recorded"}  ↔  Records: ${records}`;
 }
 
 // ---- Match conversion -----------------------------------------------
@@ -87,11 +105,13 @@ export function toReviewItem(
       date: formatDisplayDate(bankTxn.date),
       desc: bankTxn.description,
       sub: `Bank • ${formatDisplayDate(bankTxn.date)}`,
+      ...withSource(bankTxn),
     },
     books: {
       date: formatDisplayDate(ledgerTxn.date),
       desc: ledgerTxn.description,
       sub: `Logged ${formatDisplayDate(ledgerTxn.date)}`,
+      ...withSource(ledgerTxn),
     },
     reasons: enrichReasons(match.reasons),
   };
@@ -108,6 +128,7 @@ function toCompositeComponent(txn: Txn): CompositeComponent {
     desc: txn.description,
     amount,
     type,
+    ...withSource(txn),
   };
 }
 
@@ -147,6 +168,7 @@ export function toCompositeReviewItem(
     bankDesc: bankTxn.description,
     bankAmount,
     bankTxnType,
+    ...(sourceLabel(bankTxn) ? { bankSource: sourceLabel(bankTxn)! } : {}),
     components,
     reasons: enrichReasons(composite.reasons),
     ambiguous: composite.ambiguous,
@@ -252,16 +274,26 @@ export function buildDashboardData(
     missingFromBank: missingFromBank.length,
   };
 
-  // Accepted one-to-one matches for the matched display list
+  // Accepted matches for the matched display list: the bank txn, plus a
+  // line saying which file / row each side came from.
+  const ledgerOf = (ids: string[]) =>
+    ids.map((id) => ledgerTxns.find((t) => t.id === id)).filter((t): t is Txn => Boolean(t));
   const allAccepted = [
-    ...accepted.map((m) => bankTxns.find((t) => t.id === m.bankTxnId)!),
+    ...accepted.map((m) => ({
+      bank: bankTxns.find((t) => t.id === m.bankTxnId)!,
+      ledger: ledgerOf([m.ledgerTxnId]),
+    })),
     // Accepted composites: show the bank ("one-side") txn
-    ...acceptedComposites.map((c) => bankTxns.find((t) => t.id === c.bankTxnId)!),
-  ].filter(Boolean);
+    ...acceptedComposites.map((c) => ({
+      bank: bankTxns.find((t) => t.id === c.bankTxnId)!,
+      ledger: ledgerOf(c.ledgerTxnIds),
+    })),
+  ].filter((x) => Boolean(x.bank));
 
-  const matched = allAccepted
-    .slice(0, MATCHED_DISPLAY_LIMIT)
-    .map((t) => toSimpleTxn(t));
+  const matched = allAccepted.slice(0, MATCHED_DISPLAY_LIMIT).map(({ bank, ledger }) => {
+    const detail = matchDetail(bank, ledger);
+    return { ...toSimpleTxn(bank), ...(detail ? { detail } : {}) };
+  });
 
   const matchedExtraCount = Math.max(0, allAccepted.length - MATCHED_DISPLAY_LIMIT);
 

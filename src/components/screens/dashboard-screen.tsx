@@ -10,6 +10,7 @@ import {
   type SimpleTxn,
 } from "@/lib/sample-data";
 import { type BalanceProof } from "@/lib/recon/types";
+import { VERDICT_LABEL, type Verdict } from "@/lib/recon/verdict";
 import { formatBreakdownAmount } from "@/lib/recon/adapter";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,10 @@ import { TxnRow } from "@/components/ui/txn-row";
 import { MissingItemRow } from "@/components/ui/missing-item-row";
 import { InsightCard } from "@/components/ui/insight-card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DuplicatesPanel, type DuplicatesPanelProps } from "@/components/duplicates-panel";
+import { MonthReviewPanel, SourceChecksCard } from "@/components/month-review-panel";
+import type { MonthReview } from "@/lib/review/months";
+import type { StatementReview } from "@/lib/review/statements";
 
 // ---- Breakdown (right side of status hero) --------------------------
 
@@ -121,6 +126,7 @@ function StatusHero({
   balanceProof,
   onReview,
   reviewLeft = 0,
+  verdict,
 }: {
   reconciled: boolean;
   unexplained: number;
@@ -128,7 +134,85 @@ function StatusHero({
   onReview: () => void;
   /** Suggested pairs still awaiting a yes/no — blocks "Fully reconciled". */
   reviewLeft?: number;
+  verdict?: Verdict;
 }) {
+  // Money agrees and nothing is open, but possible duplicates haven't been
+  // ruled on. Not a discrepancy and not an all-clear — its own state.
+  if (verdict?.status === "totals-agree-duplicate-review") {
+    const n = verdict.unresolvedDuplicateGroups;
+    return (
+      <div
+        className="card"
+        data-testid="recon-status"
+        data-verdict={verdict.status}
+        style={{
+          padding: 0,
+          overflow: "hidden",
+          borderColor: "oklch(0.88 0.06 60)",
+          display: "grid",
+          gridTemplateColumns: "1.3fr 1fr",
+        }}
+      >
+        <div
+          style={{
+            padding: "26px 28px",
+            background: "linear-gradient(135deg, var(--warn-soft), var(--surface) 80%)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+            <span className="eyebrow" style={{ color: "var(--warn-ink)" }}>
+              Reconciliation status
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 18 }}>
+            <span
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: "50%",
+                background: "var(--warn)",
+                color: "#fff",
+                display: "grid",
+                placeItems: "center",
+                flex: "none",
+              }}
+            >
+              <Icon name="search" size={26} stroke={2.2} />
+            </span>
+            <div>
+              <div
+                className="serif"
+                style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}
+              >
+                {VERDICT_LABEL[verdict.status]}
+              </div>
+              <div style={{ fontSize: 14.5, color: "var(--ink-2)", marginTop: 5, textWrap: "pretty" }}>
+                Your bank and your records agree and nothing is unmatched. {n} possible duplicate{" "}
+                {n === 1 ? "group still needs" : "groups still need"} your decision before this
+                period can be marked complete.
+              </div>
+            </div>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            iconRight="arrowRight"
+            data-testid="review-duplicates-btn"
+            onClick={() =>
+              document
+                .querySelector('[data-testid="duplicates-panel"]')
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+          >
+            Review duplicates
+          </Button>
+        </div>
+        {/* The financial side is clean — show it that way. */}
+        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} />
+      </div>
+    );
+  }
+
   if (reconciled) {
     return (
       <div
@@ -410,7 +494,7 @@ function TxnLists({
         ) : (
           <div>
             {matched.map((tx, i) => (
-              <TxnRow key={i} tx={tx} pill={<StatusPill kind="matched" />} />
+              <TxnRow key={i} tx={tx} sub={tx.detail} pill={<StatusPill kind="matched" />} />
             ))}
             {matchedExtra > 0 && (
               <div
@@ -575,6 +659,14 @@ export type DashboardScreenProps = {
   onRemoveAdded?: (txnId: string) => void;
   onAcknowledgeMissingBank?: (tx: MissingTxn) => void;
   onUnacknowledgeMissingBank?: (txnId: string) => void;
+  /** Financial status and duplicate-review status, kept separate. */
+  verdict?: Verdict;
+  /** Month-by-month findings; shown only when the data spans several months. */
+  monthReview?: MonthReview;
+  /** Statement balance verification (separate from the verdict). */
+  statementReview?: StatementReview;
+  /** Duplicate review for this import; the panel hides itself when empty. */
+  duplicates?: DuplicatesPanelProps;
 };
 
 export function DashboardScreen({
@@ -594,6 +686,10 @@ export function DashboardScreen({
   onRemoveAdded,
   onAcknowledgeMissingBank,
   onUnacknowledgeMissingBank,
+  verdict,
+  monthReview,
+  statementReview,
+  duplicates,
 }: DashboardScreenProps) {
   const reviewLeft = counts.review;
 
@@ -616,17 +712,72 @@ export function DashboardScreen({
         reviewLeft > 0
           ? `${reviewLeft} ${reviewLeft === 1 ? "pair looks" : "pairs look"} like a match but need a quick yes or no from you.`
           : "All pairs have been reviewed.",
+        ...(verdict && verdict.unresolvedDuplicateGroups > 0
+          ? [
+              `${verdict.unresolvedDuplicateGroups} possible duplicate ${verdict.unresolvedDuplicateGroups === 1 ? "group needs" : "groups need"} a decision — they are still counted in the totals until you say whether they are repeats.`,
+            ]
+          : []),
       ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* Month-level findings sit above — and stay separate from — the
+          overall verdict below. One month of data keeps the original view. */}
+      {monthReview && monthReview.months.length > 1 && <MonthReviewPanel review={monthReview} />}
+
       <StatusHero
         reconciled={reconciled}
         unexplained={unexplained}
         balanceProof={balanceProof}
         onReview={onOpenReview}
         reviewLeft={reviewLeft}
+        verdict={verdict}
       />
+
+      {/* Two separate answers: does the money agree, and is the duplicate
+          review finished? Shown only when the import had repeated rows. */}
+      {verdict && duplicates && duplicates.groups.length > 0 && (
+        <div
+          data-testid="status-strip"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+            fontSize: 13,
+          }}
+        >
+          <div
+            className="card"
+            data-testid="status-financial"
+            data-state={verdict.financial}
+            style={{ padding: "12px 16px" }}
+          >
+            <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>
+              Financial reconciliation
+            </div>
+            <span style={{ fontWeight: 600, color: verdict.financial === "agrees" ? "var(--good-ink)" : "var(--warn-ink)" }}>
+              {verdict.financial === "agrees"
+                ? "Totals agree — nothing left open"
+                : "Not reconciled — differences or open items remain"}
+            </span>
+          </div>
+          <div
+            className="card"
+            data-testid="status-duplicates"
+            data-state={verdict.dataQuality}
+            style={{ padding: "12px 16px" }}
+          >
+            <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>
+              Duplicate review
+            </div>
+            <span style={{ fontWeight: 600, color: verdict.dataQuality === "clear" ? "var(--good-ink)" : "var(--warn-ink)" }}>
+              {verdict.dataQuality === "clear"
+                ? "Complete — every possible duplicate was set aside or confirmed as separate"
+                : `${verdict.unresolvedDuplicateGroups} possible duplicate ${verdict.unresolvedDuplicateGroups === 1 ? "group" : "groups"} to review`}
+            </span>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         <KpiCard
@@ -656,7 +807,15 @@ export function DashboardScreen({
         />
       </div>
 
+      {/* One month of data: the month panel is hidden, so the statement
+          balance results and source notes are shown here instead. */}
+      {monthReview && statementReview && monthReview.months.length === 1 && (
+        <SourceChecksCard review={monthReview} statements={statementReview} />
+      )}
+
       <InsightCard insights={insights} />
+
+      {duplicates && <DuplicatesPanel {...duplicates} />}
 
       <TxnLists
         counts={counts}

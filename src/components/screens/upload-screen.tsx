@@ -6,20 +6,98 @@ import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 
 export type UploadSide = "bank" | "ledger";
-export type UploadFiles = { bank: FileMeta | null; ledger: FileMeta | null };
+/** Several files per side are allowed (for example one export per month). */
+export type UploadFiles = { bank: FileMeta[]; ledger: FileMeta[] };
+
+function FileRow({ file, onRemove }: { file: FileMeta; onRemove: () => void }) {
+  return (
+    <div
+      data-testid="uploaded-file"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "11px 14px",
+        background: "var(--good-soft)",
+        borderRadius: "var(--r-md)",
+        border: "1px solid oklch(0.88 0.05 158)",
+      }}
+    >
+      <span
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          background: "var(--surface)",
+          color: "var(--good-ink)",
+          display: "grid",
+          placeItems: "center",
+          flex: "none",
+        }}
+      >
+        <Icon name="file" size={17} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13.5,
+            fontWeight: 600,
+            color: "var(--ink)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {file.name}
+        </div>
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--good-ink)" }}>
+          {file.size}{file.rows > 0 ? ` · ${file.rows} rows` : ""} · ready
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove file"
+        aria-label={`Remove ${file.name}`}
+        style={{
+          flex: "none",
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          border: "1px solid transparent",
+          background: "transparent",
+          color: "var(--ink-3)",
+          cursor: "pointer",
+          display: "grid",
+          placeItems: "center",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "var(--surface)";
+          e.currentTarget.style.color = "var(--bad-ink)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "transparent";
+          e.currentTarget.style.color = "var(--ink-3)";
+        }}
+      >
+        <Icon name="trash" size={16} />
+      </button>
+    </div>
+  );
+}
 
 function UploadCard({
   side,
-  file,
+  files,
   onPick,
   onRemove,
   testIdInput,
 }: {
   side: UploadSide;
-  file: FileMeta | null;
-  /** Called with the selected File when the user picks or drops a CSV. */
+  files: FileMeta[];
+  /** Called once per selected/dropped file. */
   onPick: (file: File) => void;
-  onRemove: () => void;
+  onRemove: (file: FileMeta) => void;
   testIdInput?: string;
 }) {
   const [drag, setDrag] = useState(false);
@@ -30,132 +108,23 @@ function UploadCard({
     ? "The list of money in and out, from your bank."
     : "Your own record of what you earned and spent.";
   const icon = isBank ? "bank" : "book";
+  const hasFiles = files.length > 0;
 
-  if (file) {
-    return (
-      <div
-        className="card"
-        style={{
-          padding: 22,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-          borderColor: "oklch(0.88 0.05 158)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: 8,
-                background: "var(--surface-2)",
-                color: "var(--ink-2)",
-                display: "grid",
-                placeItems: "center",
-              }}
-            >
-              <Icon name={icon} size={17} />
-            </span>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
-              <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{subtitle}</div>
-            </div>
-          </div>
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: "50%",
-              background: "var(--good)",
-              color: "#fff",
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <Icon name="check" size={15} stroke={2.6} />
-          </span>
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "13px 14px",
-            background: "var(--good-soft)",
-            borderRadius: "var(--r-md)",
-            border: "1px solid oklch(0.88 0.05 158)",
-          }}
-        >
-          <span
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              background: "var(--surface)",
-              color: "var(--good-ink)",
-              display: "grid",
-              placeItems: "center",
-              flex: "none",
-            }}
-          >
-            <Icon name="file" size={18} />
-          </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: 13.5,
-                fontWeight: 600,
-                color: "var(--ink)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {file.name}
-            </div>
-            <div className="mono" style={{ fontSize: 11.5, color: "var(--good-ink)" }}>
-              {file.size}{file.rows > 0 ? ` · ${file.rows} rows` : ""} · ready
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onRemove}
-            title="Remove file"
-            style={{
-              flex: "none",
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              border: "1px solid transparent",
-              background: "transparent",
-              color: "var(--ink-3)",
-              cursor: "pointer",
-              display: "grid",
-              placeItems: "center",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--surface)";
-              e.currentTarget.style.color = "var(--bad-ink)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "transparent";
-              e.currentTarget.style.color = "var(--ink-3)";
-            }}
-          >
-            <Icon name="trash" size={16} />
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const pickAll = (list: FileList | null | undefined) => {
+    if (!list) return;
+    for (const file of Array.from(list)) onPick(file);
+  };
 
   return (
     <div
       className="card"
-      style={{ padding: 22, display: "flex", flexDirection: "column", gap: 16 }}
+      style={{
+        padding: 22,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        borderColor: hasFiles ? "oklch(0.88 0.05 158)" : undefined,
+      }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -177,8 +146,28 @@ function UploadCard({
             <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{subtitle}</div>
           </div>
         </div>
-        <span className="chip">CSV</span>
+        {hasFiles ? (
+          <span
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: "50%",
+              background: "var(--good)",
+              color: "#fff",
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <Icon name="check" size={15} stroke={2.6} />
+          </span>
+        ) : (
+          <span className="chip">CSV</span>
+        )}
       </div>
+
+      {files.map((file, i) => (
+        <FileRow key={file.id ?? `${file.name}-${i}`} file={file} onRemove={() => onRemove(file)} />
+      ))}
 
       <button
         type="button"
@@ -191,16 +180,15 @@ function UploadCard({
         onDrop={(e) => {
           e.preventDefault();
           setDrag(false);
-          const file = e.dataTransfer.files?.[0];
-          if (file) onPick(file);
+          pickAll(e.dataTransfer.files);
         }}
         style={{
           display: "flex",
-          flexDirection: "column",
+          flexDirection: hasFiles ? "row" : "column",
           alignItems: "center",
           justifyContent: "center",
           gap: 10,
-          padding: "34px 20px",
+          padding: hasFiles ? "12px 14px" : "34px 20px",
           borderRadius: "var(--r-md)",
           cursor: "pointer",
           border: `1.5px dashed ${drag ? "var(--accent)" : "var(--line)"}`,
@@ -208,39 +196,52 @@ function UploadCard({
           transition: "background .15s, border-color .15s",
         }}
       >
-        <span
-          style={{
-            width: 42,
-            height: 42,
-            borderRadius: "50%",
-            background: "var(--surface)",
-            border: "1px solid var(--line)",
-            color: drag ? "var(--accent)" : "var(--ink-3)",
-            display: "grid",
-            placeItems: "center",
-            transition: "color .15s",
-          }}
-        >
-          <Icon name="upload" size={20} />
-        </span>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>
-            Drop your CSV here
-          </div>
-          <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 2 }}>
-            or <span style={{ color: "var(--accent-ink)", fontWeight: 600 }}>browse files</span>
-          </div>
-        </div>
+        {hasFiles ? (
+          <>
+            <Icon name="plus" size={15} style={{ color: "var(--ink-3)" }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
+              Add another file
+            </span>
+            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>e.g. the next month</span>
+          </>
+        ) : (
+          <>
+            <span
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: "50%",
+                background: "var(--surface)",
+                border: "1px solid var(--line)",
+                color: drag ? "var(--accent)" : "var(--ink-3)",
+                display: "grid",
+                placeItems: "center",
+                transition: "color .15s",
+              }}
+            >
+              <Icon name="upload" size={20} />
+            </span>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>
+                Drop your CSV files here
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 2 }}>
+                or <span style={{ color: "var(--accent-ink)", fontWeight: 600 }}>browse files</span>
+                {" "}· one file or several
+              </div>
+            </div>
+          </>
+        )}
       </button>
       <input
         ref={inputRef}
         type="file"
         accept=".csv"
+        multiple
         style={{ display: "none" }}
         data-testid={testIdInput}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) onPick(file);
+          pickAll(e.target.files);
           // Reset so the same file can be re-selected
           e.target.value = "";
         }}
@@ -249,13 +250,56 @@ function UploadCard({
   );
 }
 
+/** Plain-language help for people whose export is an Excel workbook. */
+function CsvGuide() {
+  const steps: [string, string][] = [
+    ["Excel", "File → Save As (or Save a Copy) → choose “CSV UTF-8 (Comma delimited) (*.csv)”."],
+    ["Google Sheets", "File → Download → Comma-separated values (.csv)."],
+    ["Numbers (Mac)", "File → Export To → CSV…"],
+  ];
+  return (
+    <details
+      data-testid="csv-guide"
+      style={{
+        marginTop: 16,
+        padding: "12px 16px",
+        fontSize: 13,
+        color: "var(--ink-2)",
+        background: "var(--surface-2)",
+        border: "1px solid var(--line)",
+        borderRadius: "var(--r-md)",
+      }}
+    >
+      <summary style={{ cursor: "pointer", fontWeight: 600, color: "var(--ink)" }}>
+        Have an Excel file (.xlsx)? Save it as CSV first
+      </summary>
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div>
+          Reconly reads CSV files. Open your spreadsheet and save a CSV copy — your original
+          file isn&apos;t changed.
+        </div>
+        {steps.map(([app, how]) => (
+          <div key={app}>
+            <span style={{ fontWeight: 600, color: "var(--ink)" }}>{app}:</span> {how}
+          </div>
+        ))}
+        <div>
+          A workbook with several sheets needs one CSV per sheet. It&apos;s fine if the file has
+          a few title lines above the column headings — you can point Reconly at the right row
+          in the next step.
+        </div>
+      </div>
+    </details>
+  );
+}
+
 type UploadScreenProps = {
   files: UploadFiles;
   /** Current-month label, e.g. "June 2026". Empty until known (first client render). */
   periodLabel: string;
-  /** Called with the actual File object when the user selects or drops a CSV. */
+  /** Called once per file the user selects or drops. */
   onPick: (side: UploadSide, file: File) => void;
-  onRemove: (side: UploadSide) => void;
+  onRemove: (side: UploadSide, file: FileMeta) => void;
   /** Load the built-in sample CSV pair. */
   onSample: () => void;
   onStart: () => void;
@@ -264,7 +308,7 @@ type UploadScreenProps = {
 };
 
 export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onStart, errorMessage }: UploadScreenProps) {
-  const ready = Boolean(files.bank && files.ledger);
+  const ready = files.bank.length > 0 && files.ledger.length > 0;
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "12px 8px 40px" }}>
       <div style={{ textAlign: "center", marginBottom: 30 }}>
@@ -292,8 +336,9 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
             textWrap: "pretty",
           }}
         >
-          Drop in two files and we&apos;ll find what&apos;s different — in plain English, no
-          accounting know-how needed.
+          Drop in your bank statement and your own records and we&apos;ll find what&apos;s
+          different — in plain English, no accounting know-how needed. Add several files per
+          side if you have one per month.
         </p>
       </div>
 
@@ -321,16 +366,16 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <UploadCard
           side="bank"
-          file={files.bank}
+          files={files.bank}
           onPick={(file) => onPick("bank", file)}
-          onRemove={() => onRemove("bank")}
+          onRemove={(file) => onRemove("bank", file)}
           testIdInput="bank-file-input"
         />
         <UploadCard
           side="ledger"
-          file={files.ledger}
+          files={files.ledger}
           onPick={(file) => onPick("ledger", file)}
-          onRemove={() => onRemove("ledger")}
+          onRemove={(file) => onRemove("ledger", file)}
           testIdInput="ledger-file-input"
         />
       </div>
@@ -384,10 +429,12 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
             }}
           >
             <Icon name="dot" size={8} style={{ color: "var(--warn)" }} />
-            Add both files to begin
+            Add at least one file on each side to begin
           </div>
         )}
       </div>
+
+      <CsvGuide />
     </div>
   );
 }

@@ -20,6 +20,7 @@
 // the chat UI must change with it — they are one claim.
 // ============================================================
 
+import type { Verdict } from "@/lib/recon/verdict";
 import type { Match, Txn, BalanceProof, AnyCompositeMatch } from "../recon/types";
 import {
   type ReconContext,
@@ -104,6 +105,16 @@ export type ReconContextInput = {
   balanceProof: BalanceProof;
   reconciled: boolean;
   periodLabel: string;
+  /** Rows currently set aside as repeated imports. Defaults to 0. */
+  duplicatesSetAside?: number;
+  /**
+   * The verdict shown on the results screen (financial status and
+   * duplicate-review status, kept separate). When supplied it is passed
+   * through as fixed labels + one count — never any transaction data.
+   */
+  verdict?: Verdict;
+  /** How many possible-duplicate groups exist at all (reviewed or not). */
+  duplicateGroupCount?: number;
 };
 
 /**
@@ -141,7 +152,9 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     missingFromBooks: 0, // filled below after bucket assembly
     missingFromBank: 0,
     userAdded: userAddedEntries.length,
-    duplicatesSetAside: 0, // no set-aside-duplicates feature in the engine yet
+    // Rows set aside as repeated imports (a count only — the rows themselves
+    // are not part of the reconciliation and are not sent).
+    duplicatesSetAside: input.duplicatesSetAside ?? 0,
   };
 
   // -- Suggested matches (highest priority: these are what users ask about) --
@@ -264,6 +277,21 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     summary: {
       periodLabel: maskDescription(periodLabel).slice(0, 64),
       reconciled,
+      ...(input.verdict
+        ? {
+            status: {
+              overall: input.verdict.status,
+              financial: input.verdict.financial,
+              duplicateReview:
+                input.verdict.dataQuality === "duplicate-review-needed"
+                  ? ("needed" as const)
+                  : (input.duplicateGroupCount ?? 0) > 0 || (input.duplicatesSetAside ?? 0) > 0
+                    ? ("complete" as const)
+                    : ("not-applicable" as const),
+              duplicateGroupsToReview: input.verdict.unresolvedDuplicateGroups,
+            },
+          }
+        : {}),
       bankNetChange: formatMoney(balanceProof.bankNetChange),
       ledgerNetChange: formatMoney(balanceProof.ledgerNetChange),
       clearedSum: formatMoney(balanceProof.clearedSum),

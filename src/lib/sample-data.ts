@@ -12,11 +12,17 @@ export type SimpleTxn = {
   who: string;
   amount: number; // cents (positive); direction carried by `type`
   type: TxnType;
+  /** Where the matched rows came from, e.g. "Bank: jan.csv · row 4  ↔
+   *  Records: ledger.csv · row 9". Absent when provenance isn't recorded. */
+  detail?: string;
 };
 
 export type MissingTxn = SimpleTxn & {
   txnId: string; // traces back to the original engine Txn.id
   hint: string;
+  /** Where this row came from, e.g. "bank-march.csv · row 42". Absent for
+   *  reconciliations saved before provenance was recorded. */
+  source?: string;
 };
 
 /** A bank transaction the user has explicitly added to the working copy. */
@@ -37,6 +43,8 @@ export type ReviewSide = {
   date: string;
   desc: string;
   sub: string;
+  /** "file · row n" this side was read from, when known. */
+  source?: string;
 };
 
 export type ReviewItem = {
@@ -59,6 +67,8 @@ export type CompositeComponent = {
   desc: string;
   amount: number;     // cents, positive
   type: TxnType;      // "in" | "out"
+  /** "file · row n" this ledger entry was read from, when known. */
+  source?: string;
 };
 
 /**
@@ -72,6 +82,8 @@ export type CompositeReviewItem = {
   bankDesc: string;
   bankAmount: number;    // cents, positive
   bankTxnType: TxnType;
+  /** "file · row n" the bank transaction was read from, when known. */
+  bankSource?: string;
   /** Unambiguous: the definite components. Ambiguous: union of all candidates. */
   components: CompositeComponent[];
   reasons: ReviewReason[];
@@ -92,6 +104,8 @@ export type Account = {
 };
 
 export type FileMeta = {
+  /** Stable key for this upload within the session (several files per side). */
+  id?: string;
   name: string;
   size: string;
   rows: number;

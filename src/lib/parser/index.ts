@@ -270,6 +270,74 @@ export function detectColumnMap(headers: string[]): CsvColumnMap {
 // (statement-style header rows that carry no debit/credit).
 const NON_TXN_DESCRIPTION = /^(opening|beginning|closing|ending)\s+balance$/i;
 
+/** Column titles that hold a running balance. */
+const BALANCE_HEADERS = ["balance", "running balance", "running bal", "running bal.", "bal"];
+
+/**
+ * A balance the uploaded file states explicitly. `origin` says where it was
+ * read from; nothing here is ever calculated.
+ */
+export type StatementBalance = {
+  /** Signed cents, exactly as the file states it. */
+  cents: number;
+  /** 1-based line in the original file. */
+  line: number;
+  origin: "balance-row" | "title-line";
+};
+
+/** What a file says about its own opening / closing balances. */
+export type StatementBalances = {
+  opening: StatementBalance | null;
+  closing: StatementBalance | null;
+  /** True when the file has a running-balance column. */
+  hasBalanceColumn: boolean;
+  /** Balance cells on transaction rows that could not be read. */
+  unreadableBalanceCells: number;
+  /**
+   * Anything about the file's balance information that is unclear — two
+   * different opening balances, a balance row with no readable value, an
+   * amount and a balance that disagree. When non-empty, the balances are
+   * NOT used for verification; the file is flagged for review instead.
+   */
+  ambiguities: string[];
+};
+
+const OPENING_WORDS = /\b(opening|beginning|starting|previous)\s+balance\b/i;
+const CLOSING_WORDS = /\b(closing|ending|new)\s+balance\b/i;
+
+/**
+ * Balances stated in the title lines above the header row, e.g.
+ * "Opening balance: $1,234.56". A line counts only when it names exactly
+ * one kind of balance and contains exactly one readable amount.
+ */
+function titleLineBalances(
+  csvText: string,
+  titleLineCount: number,
+  decimalComma: boolean
+): { kind: "opening" | "closing"; cents: number; line: number }[] {
+  if (titleLineCount <= 0) return [];
+  const out: { kind: "opening" | "closing"; cents: number; line: number }[] = [];
+  csvText.split(LINE_BREAK, titleLineCount).forEach((text, i) => {
+    const isOpening = OPENING_WORDS.test(text);
+    const isClosing = CLOSING_WORDS.test(text);
+    if (isOpening === isClosing) return; // neither, or both on one line
+    const cells = Papa.parse<string[]>(text, { header: false }).data[0] ?? [];
+    const amounts: number[] = [];
+    for (const cell of cells) {
+      const rest = String(cell)
+        .replace(OPENING_WORDS, "")
+        .replace(CLOSING_WORDS, "")
+        .replace(/^[\s:=]+/, "")
+        .trim();
+      if (!rest || DATE_LIKE.test(rest) || !/\d/.test(rest)) continue;
+      const cents = toCents(rest, decimalComma);
+      if (cents !== null) amounts.push(cents);
+    }
+    if (amounts.length === 1) out.push({ kind: isOpening ? "opening" : "closing", cents: amounts[0], line: i + 1 });
+  });
+  return out;
+}
+
 /**
  * Cheap pre-parse to feed the column-mapping UI: returns the header row Papa
  * detected plus the first few data rows, so the user can see how their CSV
@@ -279,20 +347,168 @@ export type CsvInspection = {
   headers: string[];
   sampleRows: Record<string, string>[];
   detected: CsvColumnMap;
+  /** 1-based line the column titles were read from. */
+  headerRow: number;
+  /** First physical lines of the file, verbatim — feeds the header-row picker. */
+  rawLines: string[];
+  /**
+   * A line other than `headerRow` that looks like the real column-title row
+   * (exports often start with a bank name, account number or date range).
+   * This is only ever a SUGGESTION shown to the user — it is never applied
+   * automatically. null when the current header row already looks right or
+   * nothing better was found.
+   */
+  suggestedHeaderRow: number | null;
+  /** Set when the chosen header row looks like a transaction, not titles. */
+  headerWarning: string | null;
 };
 
-export function inspectCsv(csvText: string, sampleSize = 3): CsvInspection {
-  const result = Papa.parse<Record<string, string>>(csvText, {
+export type ParseOptions = {
+  /** 1-based physical line holding the column titles. Default 1. Lines
+   *  above it (titles, account info) are ignored. */
+  headerRow?: number;
+  /** Stamped on every Txn as `sourceFile` (provenance). */
+  sourceFile?: string;
+  /** Transaction ids are `${idPrefix}-${rowIndex}`. Defaults to `source`,
+   *  which keeps single-file ids exactly as they have always been. */
+  idPrefix?: string;
+};
+
+/** How many leading lines the header-row picker looks at / offers. */
+export const HEADER_SCAN_LINES = 15;
+
+const LINE_BREAK = /\r\n|\n|\r/;
+
+/** Remove the first `count` physical lines (title rows above the header). */
+function dropLeadingLines(text: string, count: number): string {
+  let rest = text;
+  for (let i = 0; i < count; i++) {
+    const m = LINE_BREAK.exec(rest);
+    if (!m) return "";
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return rest;
+}
+
+function normalizeHeaderRow(headerRow: number | undefined): number {
+  return headerRow && Number.isInteger(headerRow) && headerRow > 1 ? headerRow : 1;
+}
+
+function cellsOfLine(line: string): string[] {
+  const parsed = Papa.parse<string[]>(line, { header: false });
+  return (parsed.data[0] ?? []).map((c) => String(c).trim().toLowerCase());
+}
+
+/** True when a line names a date, a description and an amount-ish column. */
+function looksLikeHeaderCells(cells: string[]): boolean {
+  const has = (candidates: readonly string[]) => candidates.some((c) => cells.includes(c));
+  return (
+    has(HEADER_SYNONYMS.date) &&
+    has(HEADER_SYNONYMS.description) &&
+    (has(HEADER_SYNONYMS.amount) || has(HEADER_SYNONYMS.debit) || has(HEADER_SYNONYMS.credit))
+  );
+}
+
+const DATE_LIKE = /^\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}$/;
+const AMOUNT_LIKE = /^[-+(]?\s*[$£€¥]?\s*\d[\d.,']*\)?-?$/;
+
+/** True when a "header" row is really a transaction (headerless file). */
+function looksLikeDataCells(cells: string[]): boolean {
+  return cells.some((c) => DATE_LIKE.test(c)) && cells.some((c) => AMOUNT_LIKE.test(c) && !DATE_LIKE.test(c));
+}
+
+export function inspectCsv(
+  csvText: string,
+  sampleSize = 3,
+  options: Pick<ParseOptions, "headerRow"> = {}
+): CsvInspection {
+  const headerRow = normalizeHeaderRow(options.headerRow);
+  const result = Papa.parse<Record<string, string>>(dropLeadingLines(csvText, headerRow - 1), {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
   const headers = result.meta.fields ?? [];
+
+  const rawLines = csvText.split(LINE_BREAK, HEADER_SCAN_LINES);
+  const lineCells = rawLines.map(cellsOfLine);
+
+  let suggestedHeaderRow: number | null = null;
+  if (!looksLikeHeaderCells(lineCells[headerRow - 1] ?? [])) {
+    const idx = lineCells.findIndex(looksLikeHeaderCells);
+    if (idx !== -1 && idx + 1 !== headerRow) suggestedHeaderRow = idx + 1;
+  }
+
+  const headerWarning = looksLikeDataCells(lineCells[headerRow - 1] ?? [])
+    ? `Row ${headerRow} looks like a transaction, not column titles. Reconly needs a row of column titles — if this file has none, add one (for example: Date, Description, Amount) and upload it again.`
+    : null;
+
   return {
     headers,
     sampleRows: result.data.slice(0, sampleSize),
     detected: detectColumnMap(headers),
+    headerRow,
+    rawLines,
+    suggestedHeaderRow,
+    headerWarning,
   };
+}
+
+const DATE_TOKEN = /\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{1,4}/g;
+const PERIOD_WORDS = /\b(period|statement|from|through|thru|between)\b/i;
+
+/**
+ * Look for an explicit statement period in the title lines above the header
+ * row: a line that names a period and contains exactly two dates. Returns
+ * null unless the file states one unambiguously — this is evidence about
+ * what the file covers, so it is never guessed.
+ */
+function findStatementPeriod(
+  csvText: string,
+  titleLineCount: number,
+  dayFirst: boolean
+): { start: string; end: string } | null {
+  if (titleLineCount <= 0) return null;
+  const found: { start: string; end: string }[] = [];
+  for (const line of csvText.split(LINE_BREAK, titleLineCount)) {
+    if (!PERIOD_WORDS.test(line)) continue;
+    const tokens = line.match(DATE_TOKEN) ?? [];
+    if (tokens.length !== 2) continue;
+    const start = toIsoDate(tokens[0], dayFirst);
+    const end = toIsoDate(tokens[1], dayFirst);
+    if (start && end && start <= end) found.push({ start, end });
+  }
+  return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * Physical 1-based line number of every non-empty record in `body`
+ * (index 0 = the header record). Accounts for blank lines and for quoted
+ * fields that span several lines, so a reported line number is the line a
+ * person would find in a text editor. Returns null if the record count
+ * doesn't line up with the main parse — callers then fall back to counting.
+ */
+function recordLineNumbers(
+  body: string,
+  delimiter: string,
+  expectedRecords: number,
+  lineOffset: number
+): number[] | null {
+  const raw = Papa.parse<string[]>(body, { header: false, skipEmptyLines: false, delimiter });
+  const lines: number[] = [];
+  let line = 1 + lineOffset;
+  for (const record of raw.data) {
+    const isEmpty = record.length === 1 && record[0].length === 0;
+    if (!isEmpty) lines.push(line);
+    let span = 1;
+    for (const field of record) {
+      if (field.length > 0 && (field.includes("\n") || field.includes("\r"))) {
+        span += field.split(LINE_BREAK).length - 1;
+      }
+    }
+    line += span;
+  }
+  return lines.length === expectedRecords ? lines : null;
 }
 
 // ---- Diagnostics ----------------------------------------------------
@@ -320,6 +536,16 @@ export type ParseDiagnostics = {
   warnings: string[];
   dateOrder: "month-first" | "day-first";
   decimalStyle: "dot" | "comma";
+  /** Opening / closing balances the file states, and whether they are usable. */
+  statement: StatementBalances;
+  /**
+   * The statement period the FILE ITSELF states in its title lines (for
+   * example "Statement period: 01/01/2026 - 01/31/2026"), or null when it
+   * states none. Never inferred from the transaction dates.
+   */
+  statementPeriod: { start: string; end: string } | null;
+  /** Skipped rows whose date was missing or unreadable (subset of issueCount). */
+  invalidDateRows: number;
 };
 
 export type ParseResult = { txns: Txn[]; diagnostics: ParseDiagnostics };
@@ -337,17 +563,36 @@ export type ParseResult = { txns: Txn[]; diagnostics: ParseDiagnostics };
  * @param source   "bank" | "ledger" — stamped on every Txn.
  * @param colMap   Optional explicit column mapping. When omitted, columns
  *                 are auto-detected from the header row using known synonyms.
+ * @param options  Header row (for files with title lines above the column
+ *                 titles) and provenance (source file name, id prefix).
+ *                 Omitting it gives exactly the historical behaviour.
  */
 export function parseCsvDetailed(
   csvText: string,
   source: "bank" | "ledger",
-  colMap?: CsvColumnMap
+  colMap?: CsvColumnMap,
+  options: ParseOptions = {}
 ): ParseResult {
-  const result = Papa.parse<Record<string, string>>(csvText, {
+  const headerRow = normalizeHeaderRow(options.headerRow);
+  const lineOffset = headerRow - 1;
+  const body = dropLeadingLines(csvText, lineOffset);
+  const idPrefix = options.idPrefix ?? source;
+
+  const result = Papa.parse<Record<string, string>>(body, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
+
+  // Exact physical line of each data row (provenance + skipped-row reports).
+  const recordLines = recordLineNumbers(
+    body,
+    result.meta.delimiter,
+    result.data.length + 1,
+    lineOffset
+  );
+  const lineOf = (i: number): number =>
+    recordLines ? recordLines[i + 1] : i + 2 + lineOffset;
 
   const headers = result.meta.fields ?? [];
   const effectiveMap = colMap ?? detectColumnMap(headers);
@@ -361,7 +606,7 @@ export function parseCsvDetailed(
   // Structural errors from Papa (missing quotes, inconsistent field counts).
   const seenErrors = new Set<string>();
   for (const err of result.errors) {
-    const line = typeof err.row === "number" ? ` (line ${err.row + 2})` : "";
+    const line = typeof err.row === "number" ? ` (line ${lineOf(err.row)})` : "";
     const msg = `${err.message}${line}`;
     if (!seenErrors.has(msg)) {
       seenErrors.add(msg);
@@ -401,14 +646,81 @@ export function parseCsvDetailed(
   );
   const decimalComma = detectDecimalComma(amountSamples);
 
+  let invalidDateRows = 0;
+
+  // ---- Statement balances (captured, never calculated) -------------
+  const mappedSet = new Set(
+    [effectiveMap.date, effectiveMap.description, effectiveMap.amount, effectiveMap.debit, effectiveMap.credit]
+      .filter((c): c is string => Boolean(c))
+  );
+  const balanceCol = headers.find((h) => BALANCE_HEADERS.includes(h) && !mappedSet.has(h));
+  const statement: StatementBalances = {
+    opening: null,
+    closing: null,
+    hasBalanceColumn: Boolean(balanceCol),
+    unreadableBalanceCells: 0,
+    ambiguities: [],
+  };
+  const noteBalance = (kind: "opening" | "closing", found: StatementBalance) => {
+    const existing = statement[kind];
+    if (!existing) {
+      statement[kind] = found;
+    } else if (existing.cents !== found.cents) {
+      statement.ambiguities.push(
+        `The file gives two different ${kind} balances (line ${existing.line} and line ${found.line}).`
+      );
+    }
+  };
+  for (const t of titleLineBalances(csvText, lineOffset, decimalComma)) {
+    noteBalance(t.kind, { cents: t.cents, line: t.line, origin: "title-line" });
+  }
+  /** A row labelled "Opening balance" / "Closing balance": read its value. */
+  const captureBalanceRow = (row: Record<string, string>, line: number, label: string) => {
+    const kind: "opening" | "closing" = /^(opening|beginning)/i.test(label) ? "opening" : "closing";
+    const cell = (col: string | undefined) => (col ? (row[col] ?? "").trim() : "");
+    const balText = cell(balanceCol);
+    const amtText = cell(effectiveMap.amount) || cell(effectiveMap.credit) || cell(effectiveMap.debit);
+    const bal = balText ? toCents(balText, decimalComma) : null;
+    const amt = amtText ? toCents(amtText, decimalComma) : null;
+    if (balText && bal === null) {
+      statement.ambiguities.push(`Line ${line} is labelled "${label}" but its balance "${balText}" could not be read.`);
+      return;
+    }
+    if (bal !== null && amt !== null && amt !== 0 && amt !== bal) {
+      statement.ambiguities.push(
+        `Line ${line} is labelled "${label}" but shows both an amount and a different balance.`
+      );
+      return;
+    }
+    const value = bal ?? amt;
+    if (value === null) {
+      statement.ambiguities.push(`Line ${line} is labelled "${label}" but has no readable balance.`);
+      return;
+    }
+    noteBalance(kind, { cents: value, line, origin: "balance-row" });
+  };
   const reportIssue = (line: number, reason: string) => {
     issueCount++;
+    if (/date/i.test(reason)) invalidDateRows++;
     if (issues.length < MAX_REPORTED_ISSUES) issues.push({ line, reason });
+  };
+
+  /** The running balance printed on a transaction row, if any. */
+  const readRunningBalance = (row: Record<string, string>): { runningBalance?: number } => {
+    if (!balanceCol) return {};
+    const text = (row[balanceCol] ?? "").trim();
+    if (!text) return {};
+    const cents = toCents(text, decimalComma);
+    if (cents === null) {
+      statement.unreadableBalanceCells++;
+      return {};
+    }
+    return { runningBalance: cents };
   };
 
   const txns = result.data
     .map((row, i): Txn | null => {
-      const line = i + 2; // 1-based, after the header row
+      const line = lineOf(i); // 1-based physical line in the original file
       const dateRaw = row[effectiveMap.date];
       const descRaw = row[effectiveMap.description];
 
@@ -417,7 +729,8 @@ export function parseCsvDetailed(
         return null;
       }
       if (NON_TXN_DESCRIPTION.test(descRaw.trim())) {
-        skippedBalanceRows++; // skip OPENING BALANCE etc. — by design
+        skippedBalanceRows++; // not a transaction — but its balance is evidence
+        captureBalanceRow(row, line, descRaw.trim());
         return null;
       }
 
@@ -462,13 +775,16 @@ export function parseCsvDetailed(
       const reference = effectiveMap.reference ? row[effectiveMap.reference] : undefined;
 
       return {
-        id: `${source}-${i}`,
+        id: `${idPrefix}-${i}`,
         source,
         date,
         description: descRaw.trim(),
         amount,
         reference: reference?.trim() || undefined,
         raw: row,
+        ...(options.sourceFile !== undefined ? { sourceFile: options.sourceFile } : {}),
+        sourceLine: line,
+        ...readRunningBalance(row),
       };
     })
     .filter((t): t is Txn => t !== null);
@@ -485,6 +801,9 @@ export function parseCsvDetailed(
       warnings,
       dateOrder: dayFirst ? "day-first" : "month-first",
       decimalStyle: decimalComma ? "comma" : "dot",
+      statement,
+      statementPeriod: findStatementPeriod(csvText, lineOffset, dayFirst),
+      invalidDateRows,
     },
   };
 }

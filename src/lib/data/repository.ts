@@ -12,6 +12,8 @@
 
 import type { Txn, Match, AnyCompositeMatch } from "@/lib/recon/types";
 import type { UserAddedEntry } from "@/lib/sample-data";
+import type { DuplicateState } from "@/lib/import/duplicates";
+import type { StatementBalance } from "@/lib/parser";
 
 // ---- Domain record ---------------------------------------------------
 
@@ -44,6 +46,53 @@ export interface ReconciliationRecord {
   userAddedEntries?: UserAddedEntry[];
   /** Engine Txn IDs the user has marked as "expected/outstanding" in the bank. Optional for backward-compat. */
   acknowledgedBankIds?: string[];
+  /**
+   * The files this reconciliation was built from. Optional for
+   * backward-compat: records saved before multi-file import have none.
+   * (Each Txn also carries its own sourceFile / sourceLine.)
+   * Adding an optional field needs no IndexedDB version bump.
+   */
+  sourceFiles?: SourceFileInfo[];
+  /**
+   * Duplicate review: which imported rows are set aside as repeated, which
+   * groups the user confirmed are separate, and the audit trail.
+   *
+   * When present, `bankTxns` / `ledgerTxns` above hold EVERY imported row
+   * and the rows listed in `duplicateState.setAside` are left out of the
+   * reconciliation. Optional for backward-compat: older records have none,
+   * and then every stored row is in use. No IndexedDB version bump needed.
+   */
+  duplicateState?: DuplicateState;
+}
+
+/** One uploaded file that fed a reconciliation. */
+export interface SourceFileInfo {
+  side: "bank" | "ledger";
+  name: string;
+  /** Transactions read from the file. */
+  rows: number;
+  /** 1-based line the column titles were on. */
+  headerRow: number;
+  /** Earliest / latest transaction date in the file; null if it had none. */
+  periodStart: string | null;
+  periodEnd: string | null;
+  /** Statement period stated in the file's own title lines, if any.
+   *  Optional: absent on records saved before it was captured. */
+  statementStart?: string | null;
+  statementEnd?: string | null;
+  /** Rows the parser skipped (not in any month), and how many of those
+   *  were skipped for a missing or unreadable date. Optional as above. */
+  skippedRows?: number;
+  invalidDateRows?: number;
+  /**
+   * Opening / closing balances the file states explicitly (never
+   * calculated), with the line they were read from, and anything unclear
+   * about them. Optional: absent on records saved before balances were
+   * captured — those simply have no statement evidence.
+   */
+  statementOpening?: StatementBalance | null;
+  statementClosing?: StatementBalance | null;
+  statementAmbiguities?: string[];
 }
 
 // ---- Repository interface -------------------------------------------

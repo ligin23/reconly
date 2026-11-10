@@ -10,117 +10,21 @@
 //   books" — NOT as "recorded" or "added to your books".
 // ============================================================
 
-import type { Match, Txn, AnyCompositeMatch } from "@/lib/recon/types";
-import type { UserAddedEntry } from "@/lib/sample-data";
 import { formatPeriod } from "@/lib/data/utils";
+import { exportFileName, localIsoDate, type ExportContext } from "./buckets";
+import {
+  buildReportModel,
+  dollars,
+  shortDate,
+  type DuplicateLine,
+  type ReportSummary,
+} from "./report-model";
 
-export type PdfExportContext = {
-  accountName: string;
-  periodStart: string; // ISO yyyy-mm-dd
-  periodEnd: string;   // ISO yyyy-mm-dd
-  openingBalance: number | null; // cents; null when not yet saved
-  closingBalance: number | null; // cents; null when not yet saved
-  reconciled: boolean;
-  unexplainedDifference: number; // cents
-  bankTxns: Txn[];
-  ledgerTxns: Txn[];
-  matches: Match[];
-  compositeMatches: AnyCompositeMatch[];
-  /** Bank txns the user added to the working copy — will be recorded in books. */
-  userAddedEntries: UserAddedEntry[];
-  /** Ledger txn IDs the user has acknowledged as outstanding (not yet cleared). */
-  acknowledgedBankIds: string[];
-};
+export type PdfExportContext = ExportContext;
 
-// ---- Internal helpers ------------------------------------------------
-
-function dollars(cents: number): string {
-  const abs = Math.abs(cents) / 100;
-  const s = abs.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return cents < 0 ? `($${s})` : `$${s}`;
-}
-
-function shortDate(iso: string): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-/** Derive attention buckets from match state + raw txn lists. */
-function deriveBuckets(ctx: PdfExportContext) {
-  const {
-    matches, compositeMatches, bankTxns, ledgerTxns,
-    userAddedEntries, acknowledgedBankIds,
-  } = ctx;
-
-  const acceptedBankIds = new Set<string>();
-  const acceptedLedgerIds = new Set<string>();
-  const suggestedBankIds = new Set<string>();
-  const suggestedLedgerIds = new Set<string>();
-  const acceptedPairs: Array<{ bankTxn: Txn; ledgerTxn: Txn; reasons: string[] }> = [];
-  const reviewPairs: Array<{ bankTxn: Txn; ledgerTxn: Txn; reasons: string[] }> = [];
-
-  for (const m of matches) {
-    const bank = bankTxns.find((t) => t.id === m.bankTxnId);
-    const ledger = ledgerTxns.find((t) => t.id === m.ledgerTxnId);
-    if (!bank || !ledger) continue;
-
-    if (m.status === "accepted" || m.status === "manual") {
-      acceptedBankIds.add(m.bankTxnId);
-      acceptedLedgerIds.add(m.ledgerTxnId);
-      acceptedPairs.push({ bankTxn: bank, ledgerTxn: ledger, reasons: m.reasons });
-    } else if (m.status === "suggested") {
-      suggestedBankIds.add(m.bankTxnId);
-      suggestedLedgerIds.add(m.ledgerTxnId);
-      reviewPairs.push({ bankTxn: bank, ledgerTxn: ledger, reasons: m.reasons });
-    }
-    // rejected → fall through to unmatched
-  }
-
-  // Accepted composite matches: bank side + all ledger sides
-  for (const c of compositeMatches) {
-    if (c.status === "accepted") {
-      acceptedBankIds.add(c.bankTxnId);
-      for (const id of c.ledgerTxnIds) acceptedLedgerIds.add(id);
-    } else if (c.status === "suggested") {
-      suggestedBankIds.add(c.bankTxnId);
-      for (const id of c.ledgerTxnIds) suggestedLedgerIds.add(id);
-    }
-  }
-
-  // All unmatched bank txns
-  const allMissingFromBooks = bankTxns.filter(
-    (t) => !acceptedBankIds.has(t.id) && !suggestedBankIds.has(t.id)
-  );
-
-  // Split by whether user has added them to the reconciliation
-  const addedTxnIds = new Set(userAddedEntries.map((e) => e.txnId));
-  const missingFromBooks = allMissingFromBooks.filter((t) => !addedTxnIds.has(t.id));
-
-  // All unmatched ledger txns
-  const allMissingFromBank = ledgerTxns.filter(
-    (t) => !acceptedLedgerIds.has(t.id) && !suggestedLedgerIds.has(t.id)
-  );
-
-  // Split by whether user has acknowledged them
-  const acknowledgedSet = new Set(acknowledgedBankIds);
-  const missingFromBank = allMissingFromBank.filter((t) => !acknowledgedSet.has(t.id));
-  const acknowledgedBank = allMissingFromBank.filter((t) => acknowledgedSet.has(t.id));
-
-  return {
-    acceptedPairs,
-    reviewPairs,
-    missingFromBooks,
-    addedToReconciliation: userAddedEntries,
-    missingFromBank,
-    acknowledgedBank,
-  };
+/** Subtitle for the coverage section. */
+function coverageSubtitle(sum: ReportSummary): string {
+  return `Coverage not verified — ${sum.coverage.length} ${sum.coverage.length === 1 ? "note" : "notes"}`;
 }
 
 // ---- Colour palette (greyscale-safe, matches app tone) ---------------
@@ -142,7 +46,18 @@ const C = {
 
 // ---- Main export function --------------------------------------------
 
+/** Trigger the browser download of the PDF report. */
 export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
+  const doc = await buildPdfDocument(ctx);
+  doc.save(exportFileName(ctx.accountName, ctx.periodStart, ctx.periodEnd, "pdf"));
+}
+
+/**
+ * Build the report document. Everything it prints comes from the shared
+ * report model (report-model.ts), which is what the unit tests check.
+ */
+export async function buildPdfDocument(ctx: PdfExportContext) {
+  const model = buildReportModel(ctx);
   // Dynamic import keeps jsPDF out of the server-side bundle.
   const { jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
@@ -194,7 +109,7 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // Generated date flush right
   doc.setFontSize(10);
   doc.setTextColor(...C.ink3);
-  const genLine = `Generated ${shortDate(new Date().toISOString().slice(0, 10))}`;
+  const genLine = `Generated ${shortDate(localIsoDate())}`;
   doc.text(genLine, MR, y, { align: "right" });
   y += 22;
 
@@ -209,9 +124,7 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // ==================================================================
   const bgColor: [number, number, number] = ctx.reconciled ? C.goodBg : C.warnBg;
   const textColor: [number, number, number] = ctx.reconciled ? C.good : C.warn;
-  const verdictText = ctx.reconciled
-    ? "Your records match your bank for this period."
-    : `Your records and your bank differ by ${dollars(Math.abs(ctx.unexplainedDifference))} for this period.`;
+  const verdictText = model.verdict;
 
   doc.setFillColor(...bgColor);
   doc.roundedRect(ML, y, CW, 44, 4, 4, "F");
@@ -225,28 +138,30 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // ==================================================================
   // SUMMARY NUMBERS
   // ==================================================================
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(...C.ink);
-  doc.text("Summary", ML, y);
-  y += 14;
+  const plainHeading = (title: string) => {
+    ensureSpace(60);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(...C.ink);
+    doc.text(title, ML, y);
+    y += 14;
+  };
 
-  const {
-    acceptedPairs,
-    reviewPairs,
-    missingFromBooks,
-    addedToReconciliation,
-    missingFromBank,
-    acknowledgedBank,
-  } = deriveBuckets(ctx);
+  const { missingFromBooks, added, missingFromBank, acknowledged } = model;
+  const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+  /** Description with the file and row it came from on a second line. */
+  const withSource = (text: string, source: string) =>
+    source ? `${text}\nfrom ${source}` : text;
+  const lastY = () =>
+    (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
 
   const summaryRows: string[][] = [
-    ["Matched transactions", String(acceptedPairs.length)],
+    ["Matched transactions", String(model.matchedCount)],
     ["On bank statement, not yet in your records", String(missingFromBooks.length)],
-    ["Added to your reconciliation (to be recorded in your books)", String(addedToReconciliation.length)],
+    ["Added to your reconciliation (to be recorded in your books)", String(added.length)],
     ["In records, not yet cleared by bank", String(missingFromBank.length)],
-    ["Marked as outstanding — known timing difference", String(acknowledgedBank.length)],
-    ["Possible matches (not confirmed)", String(reviewPairs.length)],
+    ["Marked as outstanding — known timing difference", String(acknowledged.length)],
+    ["Possible matches (not confirmed)", String(model.reviewCount)],
   ];
   if (ctx.openingBalance !== null) {
     summaryRows.unshift(["Opening balance", dollars(ctx.openingBalance)]);
@@ -259,41 +174,51 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
     ctx.reconciled ? "$0.00" : dollars(Math.abs(ctx.unexplainedDifference)),
   ]);
 
-  autoTable(doc, {
-    startY: y,
-    head: [],
-    body: summaryRows,
-    margin: { left: ML, right: 48 },
-    tableWidth: CW,
-    styles: {
-      font: "helvetica",
-      fontSize: 10.5,
-      cellPadding: { top: 5, bottom: 5, left: 10, right: 10 },
-      textColor: C.ink,
-      lineColor: C.line,
-      lineWidth: 0.4,
-    },
-    columnStyles: {
-      0: { cellWidth: CW * 0.65, fontStyle: "normal", textColor: C.ink2 },
-      1: { cellWidth: CW * 0.35, halign: "right", fontStyle: "bold" },
-    },
-    alternateRowStyles: { fillColor: C.white },
-    didParseCell(data) {
-      const lastIdx = summaryRows.length - 1;
-      if (data.row.index === lastIdx) {
-        data.cell.styles.fontStyle = "bold";
-        data.cell.styles.textColor = ctx.reconciled ? C.good : C.warn;
-      }
-    },
-  });
-
-  y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 32;
+  const keyValueTable = (rows: string[][], highlightLast: boolean, labelShare = 0.65) => {
+    autoTable(doc, {
+      startY: y,
+      head: [],
+      body: rows,
+      margin: { left: ML, right: 48 },
+      tableWidth: CW,
+      styles: {
+        font: "helvetica",
+        fontSize: 10.5,
+        cellPadding: { top: 5, bottom: 5, left: 10, right: 10 },
+        textColor: C.ink,
+        lineColor: C.line,
+        lineWidth: 0.4,
+      },
+      columnStyles: {
+        0: { cellWidth: CW * labelShare, fontStyle: "normal", textColor: C.ink2 },
+        1: { cellWidth: CW * (1 - labelShare), halign: "right", fontStyle: "bold" },
+      },
+      alternateRowStyles: { fillColor: C.white },
+      didParseCell(data) {
+        if (highlightLast && data.row.index === rows.length - 1) {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.textColor = ctx.reconciled ? C.good : C.warn;
+        }
+      },
+    });
+    y = lastY() + 32;
+  };
+  // Executive summary first (when the review is available), then the
+  // original summary table, unchanged.
+  if (model.summary) {
+    plainHeading("Executive summary");
+    keyValueTable(model.summary.executive, false, 0.38);
+  }
+  plainHeading("Summary");
+  keyValueTable(summaryRows, true);
 
   // ==================================================================
   // HELPER: section heading
   // ==================================================================
-  const sectionHeading = (title: string, subtitle?: string) => {
-    ensureSpace(50);
+  /** `reserve`: room the section's first rows need, so a heading is never
+   *  left alone at the bottom of a page. */
+  const sectionHeading = (title: string, subtitle?: string, reserve = 0) => {
+    ensureSpace(50 + reserve);
     doc.setFillColor(...C.headBg);
     doc.rect(ML, y, CW, 30, "F");
     doc.setFont("helvetica", "bold");
@@ -311,11 +236,11 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
 
   // ---- Helper: txn table (date / description / amount) --------------
   const txnTable = (
-    rows: Array<[string, string, string]>,
+    lines: { date: string; description: string; amount: string; source: string }[],
     emptyMsg: string,
     rowBg?: [number, number, number]
   ) => {
-    if (rows.length === 0) {
+    if (lines.length === 0) {
       ensureSpace(30);
       doc.setFont("helvetica", "italic");
       doc.setFontSize(10);
@@ -324,11 +249,11 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
       y += 30;
       return;
     }
-    ensureSpace(rows.length * 22 + 20);
+    ensureSpace(Math.min(lines.length, 6) * 22 + 20);
     autoTable(doc, {
       startY: y,
       head: [["Date", "Description", "Amount"]],
-      body: rows,
+      body: lines.map((l) => [l.date, withSource(l.description, l.source), l.amount]),
       margin: { left: ML, right: 48 },
       tableWidth: CW,
       styles: {
@@ -358,7 +283,7 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
           }
         : {}),
     });
-    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 16;
+    y = lastY() + 16;
   };
 
   // ---- Helper: inline note below a section -------------------------
@@ -373,25 +298,125 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   };
 
   // ==================================================================
-  // SECTION: MATCHED TRANSACTIONS
+  // SECTION: IMPORTED ROWS (only when rows were repeated / set aside)
   // ==================================================================
-  if (acceptedPairs.length > 0) {
-    sectionHeading(
-      "Matched transactions",
-      `${acceptedPairs.length} pair${acceptedPairs.length !== 1 ? "s" : ""} — amounts and dates line up on both sides`
+  if (model.importSummary.length > 0) {
+    sectionHeading("Imported rows", "what was uploaded, what is in use, what was set aside");
+    // The two statuses are already in the executive summary when it is shown.
+    keyValueTable(model.summary ? model.importSummary : [...model.statusSummary, ...model.importSummary], false);
+  }
+
+  // ==================================================================
+  // SECTIONS: WHAT THE REVIEW SHOWS · MONTH BY MONTH · STATEMENT BALANCES
+  // ==================================================================
+  if (model.summary) {
+    const sum = model.summary;
+    const gridTable = (
+      head: string[],
+      body: string[][],
+      columnStyles: Record<number, { cellWidth?: number; halign?: "right" | "left" }>,
+      fontSize = 8
+    ) => {
+      autoTable(doc, {
+        startY: y,
+        head: [head],
+        body,
+        margin: { left: ML, right: 48 },
+        tableWidth: CW,
+        styles: {
+          font: "helvetica",
+          fontSize,
+          cellPadding: { top: 4, bottom: 4, left: 5, right: 5 },
+          textColor: C.ink,
+          lineColor: C.line,
+          lineWidth: 0.3,
+          overflow: "linebreak",
+        },
+        headStyles: { fillColor: C.headBg, textColor: C.ink2, fontStyle: "bold", fontSize: fontSize - 0.5 },
+        columnStyles,
+        alternateRowStyles: { fillColor: C.white },
+      });
+      y = lastY() + 24;
+    };
+
+    if (sum.evidence.length > 0) {
+      sectionHeading("What this review shows", "verified facts, possible discrepancies, missing evidence, your decisions", 110);
+      gridTable(
+        ["", "Finding"],
+        sum.evidence.map((e, i) => [i === 0 || sum.evidence[i - 1].category !== e.category ? e.category : "", e.text]),
+        { 0: { cellWidth: 120 } },
+        8.5
+      );
+    }
+
+    sectionHeading("Month-by-month findings", `${plural(sum.months.length, "month")} — matched across the whole period, grouped by each row's own date`, 120);
+    gridTable(
+      ["Month", "Bank rows", "Records rows", "Un-\nmatched", "To review", "Dup. questions", "Findings", "Statement balance", "Coverage notes"],
+      sum.months.map((m) => [
+        m.month, m.bankRows, m.recordsRows, m.unmatched, m.toReview, m.duplicateQuestions, m.findings, m.statementBalance, m.notes,
+      ]),
+      {
+        0: { cellWidth: 50 },
+        1: { cellWidth: 32, halign: "right" },
+        2: { cellWidth: 40, halign: "right" },
+        3: { cellWidth: 50, halign: "right" },
+        4: { cellWidth: 34, halign: "right" },
+        5: { cellWidth: 46, halign: "right" },
+        6: { cellWidth: 66 },
+        7: { cellWidth: 66 },
+      },
+      7.5
+    );
+    inlineNote(
+      "Bank and records rows are rows in use (rows set aside as repeated are excluded). A match is counted once, in the month of its bank row. " +
+      "These describe the uploaded records only; a month with nothing unresolved is not necessarily complete or balanced."
     );
 
-    ensureSpace(acceptedPairs.length * 22 + 30);
+    if (sum.statements.length > 0) {
+      sectionHeading("Statement balance checks", "each bank file against its own stated balances — separate from matching", 120);
+      gridTable(
+        ["Bank file", "Period", "Opening", "Net activity", "Closing", "Difference", "Result"],
+        sum.statements.map((s) => [
+          s.file, s.period, s.opening, s.netActivity, s.closing, s.difference, `${s.status}. ${s.explanation}`,
+        ]),
+        { 0: { cellWidth: 84 }, 1: { cellWidth: 60 }, 2: { cellWidth: 56 }, 3: { cellWidth: 54 }, 4: { cellWidth: 56 }, 5: { cellWidth: 48, halign: "right" } },
+        7.5
+      );
+      inlineNote(
+        "Every row read from the file is used here, including rows later set aside as repeated. " +
+        "A verified statement means the file's balances agree with its own transactions — not that the period is reconciled."
+      );
+    }
+
+    sectionHeading("Source coverage", coverageSubtitle(sum), 40);
+    for (const note of sum.coverage) inlineNote(`• ${note}`);
+    y += 10;
+  }
+
+  // ==================================================================
+  // SECTION: MATCHED TRANSACTIONS (pairs, then grouped matches)
+  // ==================================================================
+  if (model.matchedLines.length > 0) {
+    const pairs = model.buckets.acceptedPairs.length;
+    const grouped = model.buckets.acceptedComposites.length;
+    sectionHeading(
+      "Matched transactions",
+      grouped === 0
+        ? `${plural(pairs, "pair")} — amounts and dates line up on both sides`
+        : `${plural(pairs, "pair")} and ${plural(grouped, "grouped match", "grouped matches")} — amounts line up on both sides`
+    );
+
+    ensureSpace(Math.min(model.matchedLines.length, 6) * 22 + 30);
     autoTable(doc, {
       startY: y,
       head: [["Bank date", "Bank description", "Bank amount", "Books date", "Books description", "Books amount"]],
-      body: acceptedPairs.map(({ bankTxn, ledgerTxn }) => [
-        shortDate(bankTxn.date),
-        bankTxn.description,
-        dollars(bankTxn.amount),
-        shortDate(ledgerTxn.date),
-        ledgerTxn.description,
-        dollars(ledgerTxn.amount),
+      body: model.matchedLines.map((l) => [
+        l.bankDate,
+        withSource(l.bankDescription, l.bankSource),
+        l.bankAmount,
+        l.booksDate,
+        withSource(l.booksDescription, l.booksSource),
+        l.booksAmount,
       ]),
       margin: { left: ML, right: 48 },
       tableWidth: CW,
@@ -414,8 +439,14 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
         5: { halign: "right", cellWidth: 65 },
       },
       alternateRowStyles: { fillColor: C.white },
+      didParseCell(data) {
+        if (data.section !== "body") return;
+        const kind = model.matchedLines[data.row.index]?.kind;
+        if (kind === "group") data.cell.styles.fontStyle = "bold";
+        if (kind === "part" && data.column.index === 1) data.cell.styles.textColor = C.ink3;
+      },
     });
-    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 24;
+    y = lastY() + 24;
   }
 
   // ==================================================================
@@ -423,30 +454,23 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // ==================================================================
   sectionHeading(
     "On your bank statement but not in your records",
-    `${missingFromBooks.length} item${missingFromBooks.length !== 1 ? "s" : ""}`
+    plural(missingFromBooks.length, "item")
   );
-  txnTable(
-    missingFromBooks.map((t) => [shortDate(t.date), t.description, dollars(t.amount)]),
-    "None — every bank transaction has a matching entry in your records."
-  );
+  txnTable(missingFromBooks, "None — every bank transaction has a matching entry in your records.");
 
   // ==================================================================
   // SECTION: ADDED TO YOUR RECONCILIATION (user-added, to be recorded)
   // ==================================================================
-  if (addedToReconciliation.length > 0) {
+  if (added.length > 0) {
     sectionHeading(
       "Added to your reconciliation",
-      `${addedToReconciliation.length} item${addedToReconciliation.length !== 1 ? "s" : ""} — to be recorded in your books`
+      `${plural(added.length, "item")} — to be recorded in your books`
     );
     inlineNote(
       "These bank transactions are included in this reconciliation so your report is complete. " +
       "You or your accountant will need to record them in your books."
     );
-    txnTable(
-      addedToReconciliation.map((e) => [shortDate(e.date), e.description, dollars(e.amount)]),
-      "",
-      C.noteBg
-    );
+    txnTable(added, "", C.noteBg);
   }
 
   // ==================================================================
@@ -454,51 +478,59 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
   // ==================================================================
   sectionHeading(
     "In your records but not yet cleared by your bank",
-    `${missingFromBank.length} item${missingFromBank.length !== 1 ? "s" : ""}`
+    plural(missingFromBank.length, "item")
   );
-  txnTable(
-    missingFromBank.map((t) => [shortDate(t.date), t.description, dollars(t.amount)]),
-    "None — every entry in your records has cleared the bank."
-  );
+  txnTable(missingFromBank, "None — every entry in your records has cleared the bank.");
 
   // ==================================================================
   // SECTION: MARKED AS OUTSTANDING (acknowledged — timing only)
   // ==================================================================
-  if (acknowledgedBank.length > 0) {
+  if (acknowledged.length > 0) {
     sectionHeading(
       "Marked as outstanding — known timing difference",
-      `${acknowledgedBank.length} item${acknowledgedBank.length !== 1 ? "s" : ""}`
+      plural(acknowledged.length, "item")
     );
     inlineNote(
       "These are in your records but your bank hasn't processed them yet. " +
       "This is a normal timing difference — no action needed."
     );
-    txnTable(
-      acknowledgedBank.map((t) => [shortDate(t.date), t.description, dollars(t.amount)]),
-      "",
-      C.noteBg
-    );
+    txnTable(acknowledged, "", C.noteBg);
   }
 
   // ==================================================================
-  // SECTION: POSSIBLE MATCHES (REVIEW ITEMS)
+  // SECTION: POSSIBLE MATCHES (pairs, then grouped suggestions)
   // ==================================================================
-  if (reviewPairs.length > 0) {
+  if (model.reviewLines.length > 0) {
+    const pairs = model.buckets.reviewPairs.length;
+    const grouped = model.buckets.reviewComposites.length;
     sectionHeading(
       "Possible matches we weren't sure about",
-      `${reviewPairs.length} pair${reviewPairs.length !== 1 ? "s" : ""} — amounts are close but something didn't line up exactly`
+      grouped === 0
+        ? `${plural(pairs, "pair")} — amounts are close but something didn't line up exactly`
+        : `${plural(pairs, "pair")} and ${plural(grouped, "grouped match", "grouped matches")} — not confirmed`
     );
 
-    ensureSpace(reviewPairs.length * 28 + 30);
+    ensureSpace(Math.min(model.reviewLines.length, 5) * 28 + 30);
     autoTable(doc, {
       startY: y,
       head: [["Bank", "Books", "Amount", "Note"]],
-      body: reviewPairs.map(({ bankTxn, ledgerTxn, reasons }) => [
-        `${shortDate(bankTxn.date)}  ${bankTxn.description}`,
-        `${shortDate(ledgerTxn.date)}  ${ledgerTxn.description}`,
-        dollars(bankTxn.amount),
-        reasons.join("; ") || "Amounts similar, dates differ",
-      ]),
+      body: model.reviewLines.map((l) =>
+        l.kind === "part"
+          ? [
+              l.bankDescription,
+              withSource(`${l.booksDate}  ${l.booksDescription}`, l.booksSource),
+              l.booksAmount,
+              "",
+            ]
+          : [
+              withSource(`${l.bankDate}  ${l.bankDescription}`, l.bankSource),
+              l.kind === "group"
+                ? l.booksDescription
+                : withSource(`${l.booksDate}  ${l.booksDescription}`, l.booksSource),
+              l.bankAmount,
+              l.note,
+            ]
+      ),
       margin: { left: ML, right: 48 },
       tableWidth: CW,
       styles: {
@@ -520,8 +552,93 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
         3: { cellWidth: 160, textColor: C.ink3, fontSize: 8.5 },
       },
       alternateRowStyles: { fillColor: C.white },
+      didParseCell(data) {
+        if (data.section !== "body") return;
+        const kind = model.reviewLines[data.row.index]?.kind;
+        if (kind === "group" && data.column.index < 3) data.cell.styles.fontStyle = "bold";
+        if (kind === "part" && data.column.index === 0) data.cell.styles.textColor = C.ink3;
+      },
     });
-    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 24;
+    y = lastY() + 24;
+  }
+
+  // ==================================================================
+  // SECTIONS: REPEATED ROWS (set aside / possible duplicates)
+  // ==================================================================
+  const duplicateTable = (lines: DuplicateLine[], rowBg?: [number, number, number]) => {
+    ensureSpace(Math.min(lines.length, 4) * 34 + 30);
+    autoTable(doc, {
+      startY: y,
+      head: [["Side", "Date", "Description", "Amount", "Why it is listed"]],
+      body: lines.map((l) => [
+        l.side,
+        l.date,
+        withSource(l.description, l.source),
+        l.amount,
+        `${l.status}. ${l.reason}`,
+      ]),
+      margin: { left: ML, right: 48 },
+      tableWidth: CW,
+      styles: {
+        font: "helvetica",
+        fontSize: 8.5,
+        cellPadding: { top: 4, bottom: 4, left: 6, right: 6 },
+        textColor: C.ink,
+        lineColor: C.line,
+        lineWidth: 0.3,
+      },
+      headStyles: {
+        fillColor: C.headBg,
+        textColor: C.ink2,
+        fontStyle: "bold",
+        fontSize: 8,
+      },
+      columnStyles: {
+        0: { cellWidth: 38 },
+        1: { cellWidth: 62 },
+        3: { halign: "right", cellWidth: 62 },
+        4: { cellWidth: 190, textColor: C.ink3, fontSize: 8 },
+      },
+      alternateRowStyles: { fillColor: rowBg ?? C.white },
+      ...(rowBg ? { bodyStyles: { fillColor: rowBg } } : {}),
+    });
+    y = lastY() + 24;
+  };
+
+  if (model.setAsideLines.length > 0) {
+    sectionHeading(
+      "Rows set aside as repeated",
+      `${plural(model.setAsideLines.length, "row")} — imported, but not part of this reconciliation`
+    );
+    inlineNote(
+      "These rows were uploaded but are not counted above, because the same row was imported more than once. " +
+      "They are listed so nothing is hidden; each can be restored in Reconly."
+    );
+    duplicateTable(model.setAsideLines, C.noteBg);
+  }
+
+  if (model.possibleDuplicateLines.length > 0) {
+    sectionHeading(
+      "Possible duplicates still included",
+      `${plural(model.possibleDuplicateLines.length, "row")} — counted above, not confirmed either way`
+    );
+    inlineNote(
+      "These rows ARE counted in this reconciliation. They look like they may be the same row imported twice, " +
+      "but the files do not prove it, so nothing was set aside."
+    );
+    duplicateTable(model.possibleDuplicateLines);
+  }
+
+  if (model.reviewedSeparateLines.length > 0) {
+    sectionHeading(
+      "Reviewed and retained — confirmed as separate",
+      `${plural(model.reviewedSeparateLines.length, "row")} — counted above`
+    );
+    inlineNote(
+      "These rows looked like possible duplicates. They were reviewed in Reconly and confirmed as separate, " +
+      "legitimate transactions, so all of them are kept and counted in this reconciliation."
+    );
+    duplicateTable(model.reviewedSeparateLines);
   }
 
   // ==================================================================
@@ -566,10 +683,5 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
     doc.text(`Page ${i} of ${totalPages}`, MR, PH - 24, { align: "right" });
   }
 
-  // ==================================================================
-  // SAVE / TRIGGER DOWNLOAD
-  // ==================================================================
-  const safeName = ctx.accountName.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-  const period = `${ctx.periodStart}_${ctx.periodEnd}`;
-  doc.save(`reconly-${safeName}-${period}.pdf`);
+  return doc;
 }

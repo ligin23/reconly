@@ -12,6 +12,19 @@ export type Txn = {
   amount: number;      // signed cents: negative = money out, positive = money in
   reference?: string;
   raw: Record<string, string>; // original CSV row, keyed by column header
+  /** Provenance: name of the uploaded file this row came from. Optional —
+   *  absent on transactions saved before multi-file import existed. */
+  sourceFile?: string;
+  /** Provenance: 1-based line number of this row in the original file
+   *  (counting title lines, the header row and blank lines). */
+  sourceLine?: number;
+  /**
+   * The running balance printed on this row in the uploaded file's own
+   * balance column (signed cents). Only ever READ from the file — never
+   * computed. Absent when the file has no balance column or the cell was
+   * empty or unreadable. Not used by the matching engine.
+   */
+  runningBalance?: number;
 };
 
 /** How confident the engine is in a pairing. Confidence bands never overlap:
