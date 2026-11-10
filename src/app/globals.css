@@ -297,3 +297,79 @@ button { font-family: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* ---- Phone widths ----------------------------------------------------
+   The desktop layout is untouched: every rule below applies only at
+   760px and under. Layout in this app is mostly inline styles, so these
+   overrides use !important to win over them. */
+.app-menu-btn { display: none; }
+.app-sidebar-backdrop { display: none; }
+
+@media (max-width: 760px) {
+  /* Sidebar becomes a drawer that slides over the content. */
+  .app-sidebar {
+    position: fixed !important;
+    top: 0; bottom: 0; left: 0;
+    z-index: 60;
+    width: min(84vw, 300px) !important;
+    overflow-y: auto;
+    box-shadow: var(--sh-lg);
+    transform: translateX(-102%);
+    visibility: hidden;
+    transition: transform .2s ease;
+  }
+  .app-sidebar[data-open] { transform: none; visibility: visible; }
+  .app-sidebar-backdrop[data-open] {
+    display: block;
+    position: fixed; inset: 0;
+    z-index: 55;
+    background: oklch(0.2 0.01 260 / 0.38);
+    border: none;
+  }
+  .app-menu-btn {
+    display: inline-grid; place-items: center;
+    flex: none;
+    width: 40px; height: 40px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .app-topbar {
+    height: auto !important;
+    min-height: 56px;
+    padding: 8px 12px !important;
+    gap: 8px 10px;
+    flex-wrap: wrap;
+    justify-content: flex-start !important;
+  }
+  .app-topbar-title { flex: 1 1 0; }
+  .app-topbar-actions { flex-wrap: wrap; gap: 6px !important; }
+  /* Tighter buttons so Export / Save / Start over share one row. */
+  .app-topbar-actions .btn { padding: 0 9px; }
+  .app-main-inner { padding: 16px 12px 96px !important; }
+
+  /* Multi-column grids stack or halve. */
+  .m-stack { grid-template-columns: 1fr !important; }
+  .m-grid-2 { grid-template-columns: 1fr 1fr !important; }
+  .m-wrap { flex-wrap: wrap !important; }
+  .m-col { flex-direction: column !important; }
+  .m-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .m-scroll-x > .tab { flex: none; white-space: nowrap; }
+  .m-breakdown { border-left: none !important; border-top: 1px solid var(--line); }
+  .m-hide { display: none !important; }
+
+  /* Transaction rows: date · description · amount, with the action /
+     status on its own line underneath instead of squeezing the text. */
+  .m-txn {
+    grid-template-columns: 52px minmax(0, 1fr) auto !important;
+    gap: 6px 10px !important;
+    padding: 12px !important;
+  }
+  .m-txn > :nth-child(4) { grid-column: 1 / -1; justify-content: flex-start !important; }
+  .m-history { grid-template-columns: minmax(0, 1fr) auto !important; row-gap: 6px !important; padding: 12px !important; }
+  .m-pad { padding: 16px !important; }
+  .m-h1 { font-size: 28px !important; }
+}

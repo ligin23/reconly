@@ -363,7 +363,7 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+      <div className="m-stack" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <UploadCard
           side="bank"
           files={files.bank}

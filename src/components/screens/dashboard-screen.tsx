@@ -96,6 +96,7 @@ function Breakdown({
 
   return (
     <div
+      className="m-breakdown"
       style={{
         padding: "24px 26px",
         borderLeft: "1px solid var(--line)",
@@ -158,7 +159,7 @@ function StatusHero({
     const target = n > 0 ? "duplicates-panel" : "month-review";
     return (
       <div
-        className="card"
+        className="card m-stack"
         data-testid="recon-status"
         data-verdict={verdict.status}
         style={{
@@ -232,7 +233,7 @@ function StatusHero({
   if (reconciled) {
     return (
       <div
-        className="card"
+        className="card m-stack"
         data-testid="recon-status"
         style={{
           padding: 0,
@@ -315,7 +316,7 @@ function StatusHero({
 
   return (
     <div
-      className="card"
+      className="card m-stack"
       data-testid="recon-status"
       style={{
         padding: 0,
@@ -485,6 +486,7 @@ function TxnLists({
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div
+        className="m-scroll-x"
         style={{
           display: "flex",
           alignItems: "center",
@@ -765,6 +767,7 @@ export function DashboardScreen({
       {verdict && (
         <div
           data-testid="status-strip"
+          className="m-stack"
           style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, fontSize: 13 }}
         >
           <div className="card" data-testid="status-financial" data-state={verdict.financial} style={{ padding: "12px 16px" }}>
@@ -820,6 +823,34 @@ export function DashboardScreen({
           </div>
         </div>
       )}
+
+      <div className="m-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        <KpiCard
+          label="Matched"
+          value={counts.matched}
+          kind="matched"
+          hint="Lined up on both sides"
+        />
+        <KpiCard
+          label="Needs review"
+          value={reviewLeft}
+          kind="review"
+          hint={reviewLeft ? "A quick yes or no" : "All done"}
+          onClick={reviewLeft ? onOpenReview : undefined}
+        />
+        <KpiCard
+          label="Not in your records"
+          value={counts.missingFromBooks}
+          kind="problem"
+          hint="On your bank, not in your records"
+        />
+        <KpiCard
+          label="Not cleared yet"
+          value={counts.missingFromBank}
+          kind="missing"
+          hint="In your books, not the bank"
+        />
+      </div>
 
       {/* One month of data: the month panel is hidden, so the statement
           balance results and source notes are shown here instead. */}

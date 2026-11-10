@@ -194,7 +194,7 @@ function SaveDialog({
           >
             Period
           </span>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="m-stack" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <input
               type="date"
               value={values.periodStart}
@@ -287,7 +287,13 @@ function Sidebar({
   accountName,
   periodLabel,
   showSampleBanner,
+  open,
+  onClose,
 }: {
+  /** Phone widths only: whether the drawer is showing. Ignored on desktop,
+   *  where the sidebar is always visible. */
+  open: boolean;
+  onClose: () => void;
   screen: Screen;
   analyzed: boolean;
   go: (s: Screen) => void;
@@ -310,7 +316,21 @@ function Sidebar({
       : 1;
 
   return (
+    <>
+    <button
+      type="button"
+      className="app-sidebar-backdrop"
+      data-open={open ? "" : undefined}
+      data-testid="sidebar-backdrop"
+      aria-label="Close menu"
+      tabIndex={-1}
+      onClick={onClose}
+    />
     <aside
+      id="app-sidebar"
+      className="app-sidebar"
+      data-open={open ? "" : undefined}
+      data-testid="sidebar"
       style={{
         width: 260,
         flex: "none",
@@ -321,8 +341,17 @@ function Sidebar({
         padding: "20px 16px",
       }}
     >
-      <div style={{ padding: "4px 6px 22px" }}>
+      <div style={{ padding: "4px 6px 22px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Logo />
+        <button
+          type="button"
+          className="app-menu-btn"
+          data-testid="sidebar-close"
+          aria-label="Close menu"
+          onClick={onClose}
+        >
+          <Icon name="x" size={18} />
+        </button>
       </div>
 
       <div
@@ -480,6 +509,7 @@ function Sidebar({
       </div>
       )}
     </aside>
+    </>
   );
 }
 
@@ -670,7 +700,12 @@ function TopBar({
   onSave,
   onExportPdf,
   onExportExcel,
+  menuOpen,
+  onOpenMenu,
 }: {
+  menuOpen: boolean;
+  /** Opens the navigation drawer (the button only shows at phone widths). */
+  onOpenMenu: () => void;
   screen: Screen;
   title: string;
   subtitle: string;
@@ -690,6 +725,7 @@ function TopBar({
 
   return (
     <header
+      className="app-topbar"
       style={{
         height: 64,
         flex: "none",
@@ -705,7 +741,20 @@ function TopBar({
         zIndex: 20,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <button
+        type="button"
+        className="app-menu-btn"
+        data-testid="menu-btn"
+        aria-label="Open menu"
+        aria-controls="app-sidebar"
+        aria-expanded={menuOpen}
+        onClick={onOpenMenu}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      </button>
+      <div className="app-topbar-title" style={{ minWidth: 0 }}>
         <div
           className="serif"
           style={{
@@ -730,7 +779,7 @@ function TopBar({
           {subtitle}
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="app-topbar-actions" style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {showActions && (
           <>
             <ExportMenu onPdf={onExportPdf} onExcel={onExportExcel} />
@@ -767,6 +816,16 @@ function TopBar({
 // ---- AppShell --------------------------------------------------------
 export function AppShell() {
   const [screen, setScreen] = useState<Screen>("upload");
+  // Navigation drawer (phone widths only; the sidebar is always visible on desktop).
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
   const [analyzed, setAnalyzed] = useState(false);
   // Several files per side are allowed (e.g. one bank export per month).
   const [files, setFiles] = useState<UploadFiles>({ bank: [], ledger: [] });
@@ -1699,6 +1758,7 @@ export function AppShell() {
   // back into the previous reconciliation's files and review progress. Other
   // steps (Results / Review / History) just switch screens.
   const navigate = (s: Screen) => {
+    setMenuOpen(false); // choosing a destination closes the phone drawer
     if (s === "upload" && analyzed) {
       startOver();
     } else {
@@ -1757,6 +1817,8 @@ export function AppShell() {
           accountName={currentRecord?.accountName ?? null}
           periodLabel={periodLabel}
           showSampleBanner={usingSampleData}
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
         />
       )}
 
@@ -1771,6 +1833,8 @@ export function AppShell() {
             analyzed={analyzed}
             hasSavedRecord={Boolean(currentRecordId)}
             saveStatus={saveStatus}
+            menuOpen={menuOpen}
+            onOpenMenu={() => setMenuOpen(true)}
             onStartOver={startOver}
             onSave={handleSaveClick}
             onExportPdf={handleExportPdf}
@@ -1780,6 +1844,7 @@ export function AppShell() {
 
         <main style={{ flex: 1, overflowY: "auto" }}>
           <div
+            className="app-main-inner"
             style={{
               maxWidth: screen === "dashboard" ? 980 : 1040,
               margin: "0 auto",

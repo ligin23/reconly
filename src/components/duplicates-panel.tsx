@@ -181,11 +181,11 @@ function GroupCard({
           const by = setAside.get(t.id);
           return (
             <div key={t.id} data-testid="dup-row" style={{ padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div className="m-wrap" style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span
                   className="mono"
                   data-testid="dup-row-source"
-                  style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--ink)", wordBreak: "break-word" }}
+                  style={{ flex: "1 1 180px", minWidth: 0, fontSize: 12, color: "var(--ink)", wordBreak: "break-word" }}
                 >
                   {sourceLabel(t) ?? "source not recorded"}
                 </span>
@@ -377,7 +377,7 @@ export function DuplicatesPanel({
   );
 
   return (
-    <div className="card" data-testid="duplicates-panel" style={{ padding: "18px 20px" }}>
+    <div className="card m-pad" data-testid="duplicates-panel" style={{ padding: "18px 20px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 600 }}>Repeated rows in your files</div>

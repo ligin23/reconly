@@ -160,7 +160,7 @@ function ReviewCard({
         <Confidence value={item.confidence} />
       </div>
 
-      <div style={{ display: "flex", alignItems: "stretch", gap: 12, position: "relative" }}>
+      <div className="m-col" style={{ display: "flex", alignItems: "stretch", gap: 12, position: "relative" }}>
         <Side icon="bank" label="On your bank" data={item.bank} />
         <div style={{ display: "grid", placeItems: "center", flex: "none", width: 30 }}>
           <span
@@ -236,7 +236,7 @@ function ReviewCard({
         </ul>
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+      <div className="m-wrap" style={{ display: "flex", gap: 10, marginTop: 20 }}>
         <Button variant="accept" block icon="check" onClick={() => onDecide("accept")}>
           Yes, it&apos;s a match
         </Button>
@@ -748,7 +748,7 @@ function CompositeReviewCard({
       </div>
 
       {/* Actions */}
-      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+      <div className="m-wrap" style={{ display: "flex", gap: 10, marginTop: 18 }}>
         <Button
           variant="accept"
           block

@@ -616,7 +616,7 @@ export function MappingScreen({ files, onHeaderRowChange, onBack, onConfirm, err
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" }}>
+      <div className="m-stack" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, alignItems: "start" }}>
         {column(bankGroups)}
         {column(ledgerGroups)}
       </div>

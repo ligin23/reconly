@@ -418,7 +418,7 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
   const num: React.CSSProperties = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
 
   return (
-    <div className="card" data-testid="month-review" style={{ padding: "20px 22px" }}>
+    <div className="card m-pad" data-testid="month-review" style={{ padding: "20px 22px" }}>
       <span className="eyebrow" style={{ color: "var(--accent-ink)" }}>Financial review</span>
       <h2
         className="serif"
@@ -433,7 +433,7 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
         next still counts as matched.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 16 }}>
+      <div className="m-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 16 }}>
         <Stat label="Months analyzed" value={o.monthsAnalyzed} testId="mr-months" />
         <Stat label="Months with unresolved findings" value={o.monthsWithFindings} testId="mr-months-findings" />
         <Stat label="Unmatched transactions" value={o.unmatchedTransactions} testId="mr-unmatched" />
@@ -461,7 +461,7 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
           borderRadius: "var(--r-sm, 8px)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div className="m-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <span>
             <span style={{ fontWeight: 600, color: "var(--ink)" }}>{review.coverage.label}.</span> These statuses
             describe the uploaded records only; a month with nothing unresolved is not necessarily complete or
@@ -518,7 +518,29 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
                       background: open ? "var(--surface-2)" : undefined,
                     }}
                   >
-                    <td style={{ ...td, fontWeight: 600, whiteSpace: "nowrap" }}>{m.label}</td>
+                    <td style={{ ...td, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {/* The month name opens its details too, so on a narrow
+                          screen there is no need to scroll the table sideways
+                          to reach the button at the far end. */}
+                      <button
+                        type="button"
+                        data-testid="month-name"
+                        aria-expanded={open}
+                        onClick={() => setSelected(open ? null : m.month)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          font: "inherit",
+                          fontWeight: 600,
+                          color: "var(--ink)",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        {m.label}
+                      </button>
+                    </td>
                     <td style={num} data-testid="month-bank-rows">
                       {m.bank.inUse}
                       {m.bank.setAside > 0 && (
@@ -628,7 +650,7 @@ export function SourceChecksCard({ review, statements }: { review: MonthReview; 
   const problem = statementIssueCount(c) > 0;
   return (
     <div className="card" data-testid="source-checks" style={{ padding: "14px 18px", fontSize: 13 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div className="m-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div>
           <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>Source checks</div>
           <span

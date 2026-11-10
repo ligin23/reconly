@@ -19,7 +19,7 @@ type TxnRowProps = {
 export function TxnRow({ tx, pill, sub, onClick }: TxnRowProps) {
   return (
     <div
-      className="txn"
+      className="txn m-txn"
       onClick={onClick}
       style={{
         display: "grid",

@@ -35,7 +35,7 @@ export function MissingItemRow({
 }: MissingItemRowProps) {
   return (
     <div
-      className="txn"
+      className="txn m-txn"
       style={{
         display: "grid",
         gridTemplateColumns: "64px 1fr auto auto",

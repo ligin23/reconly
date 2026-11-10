@@ -40,7 +40,7 @@ function HistoryRow({
 
   return (
     <div
-      className="txn"
+      className="txn m-history"
       onClick={onOpen}
       style={{
         display: "grid",
