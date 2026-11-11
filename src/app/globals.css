@@ -373,3 +373,10 @@ button { font-family: inherit; }
   .m-pad { padding: 16px !important; }
   .m-h1 { font-size: 28px !important; }
 }
+
+/* Advanced demo: briefly outline the section a feature-tour link went to. */
+[data-demo-highlight] {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--r-md, 10px);
+}

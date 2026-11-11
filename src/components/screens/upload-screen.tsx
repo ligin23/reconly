@@ -293,6 +293,99 @@ function CsvGuide() {
   );
 }
 
+/**
+ * The two ways to explore Reconly without your own files. The basic sample
+ * loads one month into the normal upload → columns → results flow; the
+ * advanced demo loads three months of fictional files and goes straight to
+ * the results.
+ */
+function DemoOptions({
+  ready,
+  onSample,
+  onAdvancedDemo,
+  advancedDemoLoading,
+}: {
+  ready: boolean;
+  onSample: () => void;
+  onAdvancedDemo?: () => void;
+  advancedDemoLoading?: boolean;
+}) {
+  const card: React.CSSProperties = {
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+    textAlign: "left",
+    padding: "14px 16px",
+    background: "var(--surface)",
+    border: "1px solid var(--line)",
+    borderRadius: "var(--r-md, 10px)",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    color: "var(--ink)",
+    width: "100%",
+  };
+  const icon: React.CSSProperties = {
+    width: 30,
+    height: 30,
+    flexShrink: 0,
+    borderRadius: 8,
+    display: "grid",
+    placeItems: "center",
+    background: "var(--accent-soft)",
+    color: "var(--accent-ink)",
+  };
+  return (
+    <div data-testid="demo-options" style={{ marginTop: 26 }}>
+      <div
+        style={{ fontSize: 12.5, color: "var(--ink-3)", textAlign: "center", marginBottom: 10 }}
+      >
+        No files handy? Explore with example data.
+      </div>
+      <div className="m-stack" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <button type="button" onClick={onSample} style={card} data-testid="try-sample-btn">
+          <span style={icon}>
+            <Icon name="sparkle" size={15} />
+          </span>
+          <span>
+            <span style={{ display: "block", fontSize: 14, fontWeight: 600 }}>
+              {ready ? "Replace with sample data" : "Try with sample data"}
+            </span>
+            <span style={{ display: "block", fontSize: 12.5, color: "var(--ink-2)", marginTop: 2 }}>
+              One month of transactions — see how basic matching works.
+            </span>
+          </span>
+        </button>
+        {onAdvancedDemo && (
+          <button
+            type="button"
+            onClick={onAdvancedDemo}
+            disabled={advancedDemoLoading}
+            aria-busy={advancedDemoLoading || undefined}
+            style={{
+              ...card,
+              borderColor: "oklch(0.86 0.05 256)",
+              cursor: advancedDemoLoading ? "progress" : "pointer",
+            }}
+            data-testid="advanced-demo-btn"
+          >
+            <span style={icon}>
+              <Icon name="scale" size={15} />
+            </span>
+            <span>
+              <span style={{ display: "block", fontSize: 14, fontWeight: 600 }}>
+                {advancedDemoLoading ? "Loading advanced demo…" : "Explore advanced demo"}
+              </span>
+              <span style={{ display: "block", fontSize: 12.5, color: "var(--ink-2)", marginTop: 2 }}>
+                See how Reconly finds discrepancies, duplicates, and balance issues across multiple months.
+              </span>
+            </span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type UploadScreenProps = {
   files: UploadFiles;
   /** Current-month label, e.g. "June 2026". Empty until known (first client render). */
@@ -302,12 +395,16 @@ type UploadScreenProps = {
   onRemove: (side: UploadSide, file: FileMeta) => void;
   /** Load the built-in sample CSV pair. */
   onSample: () => void;
+  /** Load and analyse the multi-month advanced demo (fictional data). */
+  onAdvancedDemo?: () => void;
+  /** True while the advanced demo files are being fetched and analysed. */
+  advancedDemoLoading?: boolean;
   onStart: () => void;
   /** Rejected/failed file message (wrong type, too large, read error). */
   errorMessage?: string | null;
 };
 
-export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onStart, errorMessage }: UploadScreenProps) {
+export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, onAdvancedDemo, advancedDemoLoading, onStart, errorMessage }: UploadScreenProps) {
   const ready = files.bank.length > 0 && files.ledger.length > 0;
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "12px 8px 40px" }}>
@@ -400,24 +497,6 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
         >
           Start analysis
         </Button>
-        <button
-          type="button"
-          onClick={onSample}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontSize: 13.5,
-            color: "var(--ink-2)",
-            fontWeight: 500,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
-          <Icon name="sparkle" size={14} />
-          {ready ? "Replace with sample data" : "Try with sample data"}
-        </button>
         {!ready && (
           <div
             style={{
@@ -433,6 +512,13 @@ export function UploadScreen({ files, periodLabel, onPick, onRemove, onSample, o
           </div>
         )}
       </div>
+
+      <DemoOptions
+        ready={ready}
+        onSample={onSample}
+        onAdvancedDemo={onAdvancedDemo}
+        advancedDemoLoading={advancedDemoLoading}
+      />
 
       <CsvGuide />
     </div>

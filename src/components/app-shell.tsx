@@ -59,6 +59,12 @@ import { generateId, inferPeriod, formatPeriod, deriveStatus } from "@/lib/data/
 import { downloadPdfReport } from "@/lib/export/pdf-report";
 import { downloadExcelWorksheet } from "@/lib/export/excel-worksheet";
 import { CopilotPanel } from "@/components/copilot-panel";
+import { DemoBanner, DemoTourPanel } from "@/components/demo-tour-panel";
+import {
+  ADVANCED_DEMO_ACCOUNT_LABEL,
+  ADVANCED_DEMO_BASE_PATH,
+  ADVANCED_DEMO_FILES,
+} from "@/lib/demo/advanced-demo";
 import { buildReconContext } from "@/lib/copilot/context-builder";
 
 type Screen = "upload" | "mapping" | "processing" | "dashboard" | "review" | "history";
@@ -98,11 +104,14 @@ function SaveDialog({
   initialValues,
   onSave,
   onCancel,
+  sampleData = false,
 }: {
   open: boolean;
   initialValues: SaveFormValues;
   onSave: (values: SaveFormValues) => void;
   onCancel: () => void;
+  /** The advanced demo is open: the record is saved and labelled as sample data. */
+  sampleData?: boolean;
 }) {
   const [values, setValues] = useState<SaveFormValues>(initialValues);
 
@@ -156,6 +165,22 @@ function SaveDialog({
         >
           Save reconciliation
         </h2>
+
+        {sampleData && (
+          <div
+            data-testid="save-sample-note"
+            style={{
+              fontSize: 13,
+              color: "var(--accent-ink)",
+              background: "var(--accent-soft)",
+              borderRadius: "var(--r-sm)",
+              padding: "8px 12px",
+              margin: "-8px 0 18px",
+            }}
+          >
+            This is the fictional demo. It will be saved and labelled as sample data.
+          </div>
+        )}
 
         {/* Account name */}
         <label style={{ display: "block", marginBottom: 16 }}>
@@ -287,6 +312,7 @@ function Sidebar({
   accountName,
   periodLabel,
   showSampleBanner,
+  sampleBannerText,
   open,
   onClose,
 }: {
@@ -302,6 +328,8 @@ function Sidebar({
   accountName: string | null;
   periodLabel: string;
   showSampleBanner: boolean;
+  /** Overrides the banner's body text (the advanced demo uses its own). */
+  sampleBannerText?: string;
 }) {
   const steps: { key: Screen; n: number; label: string; screens: Screen[] }[] = [
     { key: "upload", n: 1, label: "Upload files", screens: ["upload", "mapping"] },
@@ -494,7 +522,7 @@ function Sidebar({
             gap: 6,
           }}
         >
-          <Icon name="sparkle" size={13} /> Sample workspace
+          <Icon name="sparkle" size={13} /> {sampleBannerText ? "Demo workspace" : "Sample workspace"}
         </div>
         <div
           style={{
@@ -504,7 +532,7 @@ function Sidebar({
             lineHeight: 1.45,
           }}
         >
-          You&apos;re exploring with example data. Nothing here is real.
+          {sampleBannerText ?? "You're exploring with example data. Nothing here is real."}
         </div>
       </div>
       )}
@@ -868,6 +896,12 @@ export function AppShell() {
   // True only while the built-in sample CSVs are loaded — gates the
   // "Sample workspace" disclaimer so it never shows over real uploads.
   const [usingSampleData, setUsingSampleData] = useState(false);
+  // True while the advanced demo (three months of fictional files) is the
+  // current reconciliation — gates the demo banner, the feature tour and the
+  // "sample data" labelling on save and export.
+  const [usingAdvancedDemo, setUsingAdvancedDemo] = useState(false);
+  const [advancedDemoLoading, setAdvancedDemoLoading] = useState(false);
+  const [demoTourHidden, setDemoTourHidden] = useState(false);
 
   // Rejected/failed file pick (wrong type, too large, read failure).
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1096,13 +1130,15 @@ export function AppShell() {
     const allTxns = [...engineOutput.bankTxns, ...engineOutput.ledgerTxns];
     const period = inferPeriod(allTxns);
     return {
-      // No fake prefill — the user names their own account
-      accountName: currentRecord?.accountName ?? "",
+      // No fake prefill — the user names their own account. (The demo's
+      // fictional account is the one exception, and is labelled as such.)
+      accountName:
+        currentRecord?.accountName ?? (usingAdvancedDemo ? ADVANCED_DEMO_ACCOUNT_LABEL : ""),
       periodStart: period?.start ?? "",
       periodEnd: period?.end ?? "",
       openingBalance: "0.00",
     };
-  }, [engineOutput, currentRecord]);
+  }, [engineOutput, currentRecord, usingAdvancedDemo]);
 
   // ---- Upload handlers ------------------------------------------------
 
@@ -1178,6 +1214,7 @@ export function AppShell() {
         setFiles((f) => ({ ...f, [other]: [] }));
       }
       setUsingSampleData(false);
+      setUsingAdvancedDemo(false);
     };
     reader.readAsText(file);
   };
@@ -1206,8 +1243,55 @@ export function AppShell() {
         });
         setUploadError(null);
         setUsingSampleData(true);
+        setUsingAdvancedDemo(false);
       })
       .catch(console.error);
+  };
+
+  /**
+   * Advanced demo: load the fictional three-month files and run them through
+   * the normal import (confirmMapping → processing → results). The column
+   * mappings are the ones Reconly's own detection picks for these files, so
+   * the mapping screen is skipped — nothing else is.
+   */
+  const useAdvancedDemo = () => {
+    if (advancedDemoLoading) return;
+    setAdvancedDemoLoading(true);
+    setUploadError(null);
+    Promise.all(
+      ADVANCED_DEMO_FILES.map((f) =>
+        fetch(ADVANCED_DEMO_BASE_PATH + f.name).then((r) => {
+          if (!r.ok) throw new Error(`${f.name}: HTTP ${r.status}`);
+          return r.text();
+        })
+      )
+    )
+      .then((contents) => {
+        const loaded = ADVANCED_DEMO_FILES.map((f, i) => ({
+          side: f.side,
+          file: { id: `demo-${f.name}`, name: f.name, content: contents[i], sample: true } as LoadedFile,
+        }));
+        const pick = (side: UploadSide) => loaded.filter((l) => l.side === side).map((l) => l.file);
+        fileContentsRef.current = { bank: pick("bank"), ledger: pick("ledger") };
+        const meta = (f: LoadedFile): FileMeta => ({
+          id: f.id,
+          name: f.name,
+          size: formatFileSize(new Blob([f.content]).size),
+          rows: 0,
+        });
+        setFiles({ bank: pick("bank").map(meta), ledger: pick("ledger").map(meta) });
+        setUsingSampleData(false);
+        setUsingAdvancedDemo(true);
+        setDemoTourHidden(false);
+        confirmMapping(
+          ADVANCED_DEMO_FILES.map((f) => ({ fileId: `demo-${f.name}`, map: f.map, headerRow: f.headerRow }))
+        );
+      })
+      .catch((err) => {
+        console.error(err);
+        setUploadError("The demo files couldn't be loaded. Check your connection and try again.");
+      })
+      .finally(() => setAdvancedDemoLoading(false));
   };
 
   const startAnalysis = () => {
@@ -1453,6 +1537,7 @@ export function AppShell() {
     setCurrentRecordId(null);
     setSaveStatus("idle");
     setUsingSampleData(false);
+    setUsingAdvancedDemo(false);
     setUploadError(null);
     setMappingError(null);
     setParseNotices([]);
@@ -1589,6 +1674,10 @@ export function AppShell() {
     setUserAddedEntries(record.userAddedEntries ?? []);
     setAcknowledgedBankIds(record.acknowledgedBankIds ?? []);
     setSourceFiles(record.sourceFiles ?? []);
+    // A saved copy of the demo stays labelled as fictional when reopened.
+    setUsingAdvancedDemo(record.sampleData === true);
+    setUsingSampleData(false);
+    setParseNotices([]);
     setCurrentRecordId(record.id);
     setAnalyzed(true);
     setScreen("dashboard");
@@ -1600,11 +1689,18 @@ export function AppShell() {
     const id = generateId();
     const now = new Date().toISOString();
     const openingBalance = Math.round((parseFloat(values.openingBalance) || 0) * 100);
+    // Demo data is always saved under a name that says it is sample data.
+    const typedName = values.accountName.trim();
+    const accountName =
+      usingAdvancedDemo && !/^sample data\b/i.test(typedName)
+        ? `Sample data — ${typedName}`
+        : typedName;
     const record: ReconciliationRecord = {
       id,
       createdAt: now,
       updatedAt: now,
-      accountName: values.accountName.trim(),
+      accountName,
+      ...(usingAdvancedDemo ? { sampleData: true } : {}),
       periodStart: values.periodStart,
       periodEnd: values.periodEnd,
       openingBalance,
@@ -1709,7 +1805,9 @@ export function AppShell() {
     const allTxns = [...engineOutput.bankTxns, ...engineOutput.ledgerTxns];
     const period = inferPeriod(allTxns);
     return {
-      accountName: currentRecord?.accountName ?? "Unsaved reconciliation",
+      accountName:
+        currentRecord?.accountName ??
+        (usingAdvancedDemo ? ADVANCED_DEMO_ACCOUNT_LABEL : "Unsaved reconciliation"),
       periodStart: currentRecord?.periodStart ?? period?.start ?? "",
       periodEnd:   currentRecord?.periodEnd   ?? period?.end   ?? "",
       openingBalance: currentRecord?.openingBalance ?? null,
@@ -1816,7 +1914,12 @@ export function AppShell() {
           historyCount={savedRecords.length}
           accountName={currentRecord?.accountName ?? null}
           periodLabel={periodLabel}
-          showSampleBanner={usingSampleData}
+          showSampleBanner={usingSampleData || usingAdvancedDemo}
+          sampleBannerText={
+            usingAdvancedDemo
+              ? "All financial data here is fictional. Nothing is saved unless you choose to."
+              : undefined
+          }
           open={menuOpen}
           onClose={() => setMenuOpen(false)}
         />
@@ -1858,6 +1961,8 @@ export function AppShell() {
                 onPick={pickFile}
                 onRemove={removeFile}
                 onSample={useSample}
+                onAdvancedDemo={useAdvancedDemo}
+                advancedDemoLoading={advancedDemoLoading}
                 onStart={startAnalysis}
                 errorMessage={uploadError}
               />
@@ -1875,6 +1980,14 @@ export function AppShell() {
 
             {screen === "processing" && (
               <ProcessingScreen onComplete={onProcessed} counts={reconCounts} />
+            )}
+
+            {usingAdvancedDemo && dashboardData && (screen === "dashboard" || screen === "review") && (
+              <DemoBanner tourHidden={demoTourHidden} onShowTour={() => { setDemoTourHidden(false); setScreen("dashboard"); }} />
+            )}
+
+            {usingAdvancedDemo && screen === "dashboard" && dashboardData && !demoTourHidden && (
+              <DemoTourPanel onDismiss={() => setDemoTourHidden(true)} onOpenReview={() => setScreen("review")} />
             )}
 
             {screen === "dashboard" && dashboardData && parseNotices.length > 0 && (
@@ -1980,6 +2093,7 @@ export function AppShell() {
         initialValues={saveDialogInitialValues}
         onSave={handleSaveFromDialog}
         onCancel={() => setSaveDialogOpen(false)}
+        sampleData={usingAdvancedDemo}
       />
 
       {copilotVisible && (

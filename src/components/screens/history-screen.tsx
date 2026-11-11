@@ -57,6 +57,23 @@ function HistoryRow({
           style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}
         >
           {record.accountName}
+          {record.sampleData && (
+            <span
+              data-testid="history-sample-badge"
+              style={{
+                marginLeft: 8,
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--accent-ink)",
+                background: "var(--accent-soft)",
+                borderRadius: 999,
+                padding: "2px 8px",
+                verticalAlign: "middle",
+              }}
+            >
+              Sample data
+            </span>
+          )}
         </div>
         <div
           className="mono"

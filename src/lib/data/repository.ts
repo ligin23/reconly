@@ -63,6 +63,12 @@ export interface ReconciliationRecord {
    * and then every stored row is in use. No IndexedDB version bump needed.
    */
   duplicateState?: DuplicateState;
+  /**
+   * True when this record was saved from the advanced demo (fictional
+   * sample data). Optional; absent means real data. No IndexedDB version
+   * bump needed.
+   */
+  sampleData?: boolean;
 }
 
 /** One uploaded file that fed a reconciliation. */
