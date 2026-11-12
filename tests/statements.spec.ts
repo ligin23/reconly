@@ -10,7 +10,7 @@ const fixture = (name: string) => resolve(__dirname, "fixtures", name);
 const row = (page: Page, month: string) => page.locator(`[data-testid="month-row"][data-month="${month}"]`);
 
 test("several months: statement balance shown per month, separately from matching", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles([stmt("stmt-jan.csv"), stmt("stmt-feb.csv")]);
   await page.getByTestId("ledger-file-input").setInputFiles(stmt("stmt-ledger.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -49,7 +49,7 @@ test("several months: statement balance shown per month, separately from matchin
 });
 
 test("a single month still shows statement balance and source notes in a compact card", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(fixture("bank_one_fee.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(fixture("ledger_missing_fee.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -72,7 +72,7 @@ test("a single month still shows statement balance and source notes in a compact
 });
 
 test("a single month with no balance information says so instead of staying silent", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(resolve(__dirname, "fixtures", "dupes", "bank-twin.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(resolve(__dirname, "fixtures", "dupes", "ledger-twin.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -83,7 +83,7 @@ test("a single month with no balance information says so instead of staying sile
 });
 
 test("transactions match but the statement's balances don't add up → not 'Fully reconciled'", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(stmt("stmt-jan-bad-closing.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(stmt("stmt-ledger-jan.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -121,7 +121,7 @@ test("transactions match but the statement's balances don't add up → not 'Full
 });
 
 test("fully reconciled with no statement evidence says 'Not verified' beside the all-clear", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(stmt("stmt-ledger-jan.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(stmt("stmt-ledger-jan.csv"));
   await page.getByTestId("start-analysis-btn").click();

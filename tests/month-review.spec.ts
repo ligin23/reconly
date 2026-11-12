@@ -10,7 +10,7 @@ const multi = (name: string) => resolve(__dirname, "fixtures", "multi", name);
 const dupes = (name: string) => resolve(__dirname, "fixtures", "dupes", name);
 
 async function analyze(page: Page, bank: string[], ledger: string, titled = false) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(bank);
   await page.getByTestId("ledger-file-input").setInputFiles(ledger);
   await page.getByTestId("start-analysis-btn").click();
@@ -137,7 +137,7 @@ test("browser performance: 24 months, 24 bank files, ~7,200 rows per side", asyn
     buffer: Buffer.from(["Date,Description,Amount", ...ledgerRows].join("\n")),
   };
 
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(bankFiles);
   await page.getByTestId("ledger-file-input").setInputFiles(ledgerFile);
   await expect(page.getByTestId("uploaded-file")).toHaveCount(25);

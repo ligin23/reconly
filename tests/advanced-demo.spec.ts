@@ -12,13 +12,13 @@ import XLSX from "xlsx-js-style";
 const fixture = (name: string) => resolve(__dirname, "fixtures", name);
 
 async function openAdvancedDemo(page: Page) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("advanced-demo-btn").click();
   await expect(page.getByTestId("recon-status")).toBeVisible({ timeout: 20_000 });
 }
 
 test("the basic sample data flow is unchanged and shows no demo banner", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await expect(page.getByTestId("try-sample-btn")).toHaveText(/try with sample data/i);
   await page.getByTestId("try-sample-btn").click();
   await expect(page.getByText("bank-june2026.csv")).toBeVisible();
@@ -36,7 +36,7 @@ test("the basic sample data flow is unchanged and shows no demo banner", async (
 });
 
 test("the advanced demo loads every file and lands on the multi-month Financial Review", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await expect(page.getByTestId("advanced-demo-btn")).toContainText("Explore advanced demo");
   await expect(page.getByTestId("advanced-demo-btn")).toContainText(
     "See how Reconly finds discrepancies, duplicates, and balance issues across multiple months."
@@ -124,7 +124,7 @@ test("PDF and Excel exports contain the demo's findings and say it is sample dat
 
 test("the demo never touches saved reconciliations or auto-saves itself", async ({ page }) => {
   // A real reconciliation, saved first.
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(fixture("clean_bank.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(fixture("clean_ledger.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -175,7 +175,7 @@ test.describe("phone width", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
   test("the demo options and the demo itself are usable at 390px", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     const btn = page.getByTestId("advanced-demo-btn");
     await btn.scrollIntoViewIfNeeded();
     const b = (await btn.boundingBox())!;

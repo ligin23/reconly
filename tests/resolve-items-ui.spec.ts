@@ -27,7 +27,7 @@ const fixture = (n: string) => resolve(__dirname, "fixtures", n);
 
 // Helper: upload files, confirm mapping, wait for dashboard to render.
 async function loadFixture(page: import("@playwright/test").Page) {
-  await page.goto("/");
+  await page.goto("/app");
 
   // Hidden file inputs — setInputFiles bypasses the visibility check.
   await page.getByTestId("bank-file-input").setInputFiles(fixture("bank_one_fee.csv"));

@@ -11,7 +11,7 @@ import XLSX from "xlsx-js-style";
 const fixture = (...p: string[]) => resolve(__dirname, "fixtures", ...p);
 
 async function openDemo(page: Page) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("advanced-demo-btn").click();
   await expect(page.getByTestId("recon-status")).toBeVisible({ timeout: 20_000 });
 }
@@ -237,7 +237,7 @@ for (const viewport of [
 }
 
 test("RECON-006: with one month of data, the same action opens the Source checks card", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(fixture("statements", "stmt-jan.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(fixture("statements", "stmt-ledger-jan.csv"));
   await page.getByTestId("start-analysis-btn").click();
@@ -253,7 +253,7 @@ test("RECON-006: with one month of data, the same action opens the Source checks
 
 // ───────────────────────── RECON-007 ─────────────────────────
 test("RECON-007: unusable files are refused at upload with the reason; a replacement works", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   const bank = page.getByTestId("bank-file-input");
   const error = page.getByTestId("upload-error");
   const start = page.getByTestId("start-analysis-btn");
@@ -286,7 +286,7 @@ test("RECON-007: unusable files are refused at upload with the reason; a replace
 });
 
 test("RECON-007: malformed dates reach mapping and are explained there; valid title-prefixed multi-file uploads still work", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles({
     name: "bad-dates.csv",
     mimeType: "text/csv",
@@ -300,7 +300,7 @@ test("RECON-007: malformed dates reach mapping and are explained there; valid ti
   await expect(page.getByTestId("recon-status")).toHaveCount(0);
 
   // A valid statement with title lines above its header, plus a second bank file.
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles([fixture("multi", "bank-jan-titled.csv"), fixture("multi", "bank-feb.csv")]);
   await page.getByTestId("ledger-file-input").setInputFiles(fixture("multi", "ledger-jan-feb.csv"));
   await expect(page.getByTestId("upload-error")).toHaveCount(0);
@@ -406,7 +406,7 @@ test("the advanced demo runs with no console errors and no failed requests", asy
 
 // ───────────────────────── Ambiguous grouped match ─────────────────────────
 test("an ambiguous grouped match needs an explicit pick, and undo brings every option back", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles({
     name: "bank.csv",
     mimeType: "text/csv",

@@ -10,7 +10,7 @@ const dupes = (name: string) => resolve(__dirname, "fixtures", "dupes", name);
 const multi = (name: string) => resolve(__dirname, "fixtures", "multi", name);
 
 async function analyze(page: Page, bank: string[], ledger: string, titled = false) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(bank);
   await page.getByTestId("ledger-file-input").setInputFiles(ledger);
   await page.getByTestId("start-analysis-btn").click();

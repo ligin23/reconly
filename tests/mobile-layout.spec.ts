@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 const fx = (...p: string[]) => resolve(__dirname, "fixtures", ...p);
 
 async function analyze(page: Page, bank: string[], ledger: string, headerClicks = 0) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(bank);
   await page.getByTestId("ledger-file-input").setInputFiles(ledger);
   await page.getByTestId("start-analysis-btn").click();
@@ -47,7 +47,7 @@ for (const width of [375, 390, 412]) {
     test.use({ viewport: { width, height: 800 } });
 
     test("the sidebar is a drawer: closed by default, opens and closes easily", async ({ page }) => {
-      await page.goto("/");
+      await page.goto("/app");
       const sidebar = page.getByTestId("sidebar");
       await expect(sidebar).toBeHidden();
       await expect(page.getByTestId("menu-btn")).toBeVisible();
@@ -157,7 +157,7 @@ for (const width of [375, 390, 412]) {
     });
 
     test("mapping and review screens stack instead of squeezing", async ({ page }) => {
-      await page.goto("/");
+      await page.goto("/app");
       await page.getByTestId("bank-file-input").setInputFiles(fx("multi", "bank-jan-titled.csv"));
       await page.getByTestId("ledger-file-input").setInputFiles(fx("multi", "ledger-jan-feb.csv"));
       await expect(page.getByTestId("uploaded-file")).toHaveCount(2);

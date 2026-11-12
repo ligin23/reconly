@@ -380,3 +380,42 @@ button { font-family: inherit; }
   outline-offset: 3px;
   border-radius: var(--r-md, 10px);
 }
+
+/* ============================================================
+   Landing page (route "/") — additions only; nothing above changes.
+   ============================================================ */
+:root {
+  --navy:   oklch(0.25 0.06 262);
+  --navy-2: oklch(0.32 0.07 262);
+}
+@theme inline {
+  --color-navy: var(--navy);
+  --color-navy-2: var(--navy-2);
+}
+
+/* Smooth in-page jumps on the landing page only, and only when the visitor
+   has not asked for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.landing) { scroll-behavior: smooth; }
+}
+
+/* A clear keyboard focus ring for every interactive element on the page. */
+.landing :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.landing .on-dark :focus-visible { outline-color: oklch(0.85 0.08 256); }
+
+.landing details > summary { list-style: none; cursor: pointer; }
+.landing details > summary::-webkit-details-marker { display: none; }
+.landing details[open] .faq-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: no-preference) {
+  .landing .faq-chevron { transition: transform .15s ease; }
+}
+
+/* Buttons on the navy call-to-action band. */
+.btn--on-dark-primary { background: #fff; color: var(--navy); }
+.btn--on-dark-primary:hover { background: var(--accent-soft); }
+.btn--on-dark-secondary { background: transparent; color: #fff; border-color: oklch(0.62 0.06 262); }
+.btn--on-dark-secondary:hover { background: var(--navy-2); }

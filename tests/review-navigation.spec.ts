@@ -77,7 +77,7 @@ const CASES: Record<Kind, Case> = {
 };
 
 async function load(page: Page, c: Case) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles({ name: "bank.csv", mimeType: "text/csv", buffer: csv(c.bank) });
   await page.getByTestId("ledger-file-input").setInputFiles({ name: "ledger.csv", mimeType: "text/csv", buffer: csv(c.ledger) });
   await page.getByTestId("start-analysis-btn").click();

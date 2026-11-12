@@ -35,7 +35,7 @@ const fixture = (name: string) => resolve(__dirname, "fixtures", name);
 
 test.describe("critical path: upload → verdict → export", () => {
   test("not-reconciled files produce an honest verdict and downloadable exports", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
 
     // --- Upload both files (hidden inputs; setInputFiles bypasses visibility) ---
     await page.getByTestId("bank-file-input").setInputFiles(fixture("bank_statement.csv"));
@@ -73,7 +73,7 @@ test.describe("critical path: upload → verdict → export", () => {
   });
 
   test("reconciled files show the all-clear verdict", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("bank-file-input").setInputFiles(fixture("clean_bank.csv"));
     await page.getByTestId("ledger-file-input").setInputFiles(fixture("clean_ledger.csv"));
     await page.getByTestId("start-analysis-btn").click();
@@ -86,7 +86,7 @@ test.describe("critical path: upload → verdict → export", () => {
   });
 
   test("persistence: a completed reconciliation survives reload and reopens", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("bank-file-input").setInputFiles(fixture("clean_bank.csv"));
     await page.getByTestId("ledger-file-input").setInputFiles(fixture("clean_ledger.csv"));
     await page.getByTestId("start-analysis-btn").click();

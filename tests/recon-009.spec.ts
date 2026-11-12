@@ -20,7 +20,7 @@ const B = ["Workshop tickets", "Print sale"];
 const ALWAYS_UNMATCHED = ["Figma subscription", "Check 1043 - Window cleaning", "Invoice 1046 - Cedar & Co"];
 
 async function openSample(page: Page) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("try-sample-btn").click();
   await page.getByTestId("start-analysis-btn").click();
   await page.getByTestId("confirm-mapping-btn").click();

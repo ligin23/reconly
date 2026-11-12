@@ -10,7 +10,7 @@ const multi = (name: string) => resolve(__dirname, "fixtures", "multi", name);
 const fixture = (name: string) => resolve(__dirname, "fixtures", name);
 
 test("several files per side, a title-row file, and provenance on the results", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
 
   // Two bank files (one with title lines above the header) + one ledger file.
   await page
@@ -49,7 +49,7 @@ test("several files per side, a title-row file, and provenance on the results", 
 });
 
 test("overlapping files are all kept and the overlap is reported", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page
     .getByTestId("bank-file-input")
     .setInputFiles([multi("bank-feb.csv"), multi("bank-late-jan.csv")]);
@@ -74,7 +74,7 @@ test("overlapping files are all kept and the overlap is reported", async ({ page
 });
 
 test("upload guards: same file twice, Excel workbook, and the CSV guide", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await expect(page.getByTestId("csv-guide")).toBeVisible();
 
   await page.getByTestId("bank-file-input").setInputFiles(fixture("clean_bank.csv"));
@@ -94,7 +94,7 @@ test("upload guards: same file twice, Excel workbook, and the CSV guide", async 
 });
 
 test("a multi-file reconciliation survives save, reload and reopen with provenance", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page
     .getByTestId("bank-file-input")
     .setInputFiles([multi("bank-jan-titled.csv"), multi("bank-feb.csv")]);

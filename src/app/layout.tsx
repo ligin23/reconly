@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Source_Serif_4, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { SITE_URL } from "@/lib/site";
 
 const sansFont = Hanken_Grotesk({
   variable: "--font-sans",
@@ -24,6 +25,7 @@ const monoFont = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "Reconly — match your books to your bank",
   description: "Bank reconciliation in plain English.",
 };

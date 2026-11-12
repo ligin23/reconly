@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 const fixture = (name: string) => resolve(__dirname, "fixtures", name);
 
 test("review screen offers only yes/no and keeps a stable total", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("bank-file-input").setInputFiles(fixture("clean_bank.csv"));
   await page.getByTestId("ledger-file-input").setInputFiles(fixture("clean_ledger.csv"));
   await page.getByTestId("start-analysis-btn").click();

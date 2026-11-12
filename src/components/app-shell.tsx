@@ -22,6 +22,7 @@ import type {
   ReconResult,
 } from "@/lib/recon/types";
 import { Icon } from "@/components/ui/icon";
+import { track } from "@/lib/analytics/track";
 import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
 import {
@@ -848,7 +849,12 @@ function TopBar({
 }
 
 // ---- AppShell --------------------------------------------------------
-export function AppShell() {
+/**
+ * `autoStart="advanced-demo"` (used by /app/demo) launches the existing
+ * Advanced Demo once on first load — the same code path as the "Explore
+ * advanced demo" button, in this one app instance.
+ */
+export function AppShell({ autoStart }: { autoStart?: "advanced-demo" } = {}) {
   const [screen, setScreen] = useState<Screen>("upload");
   // Navigation drawer (phone widths only; the sidebar is always visible on desktop).
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1311,6 +1317,7 @@ export function AppShell() {
   };
 
   const useSample = () => {
+    track({ name: "demo_start", variant: "sample" });
     Promise.all([
       fetch("/samples/bank-june2026.csv").then((r) => r.text()),
       fetch("/samples/ledger-june2026.csv").then((r) => r.text()),
@@ -1338,6 +1345,7 @@ export function AppShell() {
    */
   const useAdvancedDemo = () => {
     if (advancedDemoLoading) return;
+    track({ name: "demo_start", variant: "advanced" });
     setAdvancedDemoLoading(true);
     setUploadError(null);
     Promise.all(
@@ -1599,6 +1607,17 @@ export function AppShell() {
     // account/period label over this new data).
     setCurrentRecordId(null);
     setScreen("dashboard");
+    // Customer-validation signal: a reconciliation reached Results. Only an
+    // enum leaves this line (see lib/analytics) — never file names or data.
+    const loadedFiles = [...fileContentsRef.current.bank, ...fileContentsRef.current.ledger];
+    track({
+      name: "results_view",
+      source: loadedFiles.some((f) => f.id.startsWith("demo-"))
+        ? "advanced_demo"
+        : loadedFiles.length > 0 && loadedFiles.every((f) => f.sample)
+          ? "sample"
+          : "own_files",
+    });
   }, []);
 
   const startOver = () => {
@@ -2021,6 +2040,17 @@ export function AppShell() {
   // Shown only on the results screens (dashboard/review) of an analyzed run.
   const copilotVisible =
     analyzed && engineOutput !== null && (screen === "dashboard" || screen === "review");
+
+  // /app/demo: start the Advanced Demo once. The ref keeps it to a single
+  // run (React may re-run effects in development); the demo then behaves
+  // exactly as if the "Explore advanced demo" button had been pressed.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (autoStart !== "advanced-demo" || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    useAdvancedDemo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
