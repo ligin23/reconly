@@ -11,6 +11,7 @@ import type { Txn, Match, AnyCompositeMatch } from "@/lib/recon/types";
 import type { UserAddedEntry } from "@/lib/sample-data";
 import type { MonthReview } from "@/lib/review/months";
 import { deriveVerdict, type Verdict } from "@/lib/recon/verdict";
+import { classifyTransactions } from "@/lib/recon/classify";
 import type { StatementReview } from "@/lib/review/statements";
 import {
   unresolvedGroupCount,
@@ -92,80 +93,36 @@ export function deriveBuckets(ctx: ExportContext): ExportBuckets {
     userAddedEntries, acknowledgedBankIds,
   } = ctx;
 
-  const acceptedBankIds = new Set<string>();
-  const acceptedLedgerIds = new Set<string>();
-  const suggestedBankIds = new Set<string>();
-  const suggestedLedgerIds = new Set<string>();
-  const acceptedPairs: ExportPair[] = [];
-  const reviewPairs: ExportPair[] = [];
-
-  for (const m of matches) {
-    const bank = bankTxns.find((t) => t.id === m.bankTxnId);
-    const ledger = ledgerTxns.find((t) => t.id === m.ledgerTxnId);
-    if (!bank || !ledger) continue;
-
-    if (m.status === "accepted" || m.status === "manual") {
-      acceptedBankIds.add(m.bankTxnId);
-      acceptedLedgerIds.add(m.ledgerTxnId);
-      acceptedPairs.push({ bankTxn: bank, ledgerTxn: ledger, reasons: m.reasons });
-    } else if (m.status === "suggested") {
-      suggestedBankIds.add(m.bankTxnId);
-      suggestedLedgerIds.add(m.ledgerTxnId);
-      reviewPairs.push({ bankTxn: bank, ledgerTxn: ledger, reasons: m.reasons });
-    }
-    // rejected → falls through to unmatched
-  }
-
-  // Grouped (composite) matches. These used to be claimed here but never
-  // LISTED anywhere in the reports — an accepted group vanished from
-  // "Matched", and a pending one from the review section. They are now
-  // carried through, each transaction in exactly one place.
-  const bankById = new Map(bankTxns.map((t) => [t.id, t]));
+  // One classification shared with the results screen and the copilot
+  // (lib/recon/classify) — each transaction in exactly one place.
+  const c = classifyTransactions(matches, compositeMatches, bankTxns, ledgerTxns);
+  const acceptedPairs: ExportPair[] = c.acceptedPairs.map((p) => ({
+    bankTxn: p.bankTxn, ledgerTxn: p.ledgerTxn, reasons: p.match.reasons,
+  }));
+  const reviewPairs: ExportPair[] = c.reviewPairs.map((p) => ({
+    bankTxn: p.bankTxn, ledgerTxn: p.ledgerTxn, reasons: p.match.reasons,
+  }));
   const ledgerById = new Map(ledgerTxns.map((t) => [t.id, t]));
   const resolve = (ids: string[]) =>
     ids.map((id) => ledgerById.get(id)).filter((t): t is Txn => Boolean(t));
-
-  const acceptedComposites: ExportComposite[] = [];
-  const reviewComposites: ExportComposite[] = [];
-  for (const c of compositeMatches) {
-    if (c.status !== "accepted") continue;
-    const bank = bankById.get(c.bankTxnId);
-    if (!bank) continue;
-    // Defensive: never list a transaction as matched twice.
-    if (acceptedBankIds.has(c.bankTxnId) || c.ledgerTxnIds.some((id) => acceptedLedgerIds.has(id))) {
-      continue;
-    }
-    acceptedBankIds.add(c.bankTxnId);
-    for (const id of c.ledgerTxnIds) acceptedLedgerIds.add(id);
-    acceptedComposites.push({
-      bankTxn: bank,
-      ledgerTxns: resolve(c.ledgerTxnIds),
-      ambiguous: false,
-      combinations: null,
-      reasons: c.reasons,
-    });
-  }
-  for (const c of compositeMatches) {
-    if (c.status !== "suggested") continue;
-    const bank = bankById.get(c.bankTxnId);
-    if (!bank || acceptedBankIds.has(c.bankTxnId)) continue;
-    suggestedBankIds.add(c.bankTxnId);
-    for (const id of c.ledgerTxnIds) suggestedLedgerIds.add(id);
-    reviewComposites.push({
-      bankTxn: bank,
-      ledgerTxns: resolve(c.ledgerTxnIds),
-      ambiguous: c.ambiguous,
-      combinations: c.ambiguous ? c.allCombinations.map(resolve) : null,
-      reasons: c.reasons,
-    });
-  }
-  // rejected composites → both sides fall through to unmatched
+  const acceptedComposites: ExportComposite[] = c.acceptedGroups.map((g) => ({
+    bankTxn: g.bankTxn,
+    ledgerTxns: g.ledgerTxns,
+    ambiguous: false,
+    combinations: null,
+    reasons: g.composite.reasons,
+  }));
+  const reviewComposites: ExportComposite[] = c.reviewGroups.map((g) => ({
+    bankTxn: g.bankTxn,
+    ledgerTxns: g.ledgerTxns,
+    ambiguous: g.composite.ambiguous,
+    combinations: g.composite.ambiguous ? g.composite.allCombinations.map(resolve) : null,
+    reasons: g.composite.reasons,
+  }));
   const pendingCompositeCount = reviewComposites.length;
 
   // All unmatched bank txns
-  const allMissingFromBooks = bankTxns.filter(
-    (t) => !acceptedBankIds.has(t.id) && !suggestedBankIds.has(t.id)
-  );
+  const allMissingFromBooks = c.unmatchedBank;
   const unmatchedBankIds = new Set(allMissingFromBooks.map((t) => t.id));
 
   const addedTxnIds = new Set(userAddedEntries.map((e) => e.txnId));
@@ -184,9 +141,7 @@ export function deriveBuckets(ctx: ExportContext): ExportBuckets {
   });
 
   // All unmatched ledger txns
-  const allMissingFromBank = ledgerTxns.filter(
-    (t) => !acceptedLedgerIds.has(t.id) && !suggestedLedgerIds.has(t.id)
-  );
+  const allMissingFromBank = c.unmatchedLedger;
   const acknowledgedSet = new Set(acknowledgedBankIds);
   const missingFromBank = allMissingFromBank.filter((t) => !acknowledgedSet.has(t.id));
   const acknowledgedBank = allMissingFromBank.filter((t) => acknowledgedSet.has(t.id));

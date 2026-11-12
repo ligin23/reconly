@@ -22,6 +22,7 @@
 
 import type { Verdict } from "@/lib/recon/verdict";
 import type { Match, Txn, BalanceProof, AnyCompositeMatch } from "../recon/types";
+import { classifyTransactions } from "../recon/classify";
 import {
   type ReconContext,
   type ReconContextItem,
@@ -94,7 +95,10 @@ export type ReconContextInput = {
   compositeMatches: AnyCompositeMatch[];
   bankTxns: Txn[];
   ledgerTxns: Txn[];
-  /** Engine-base unmatched lists (before user decisions). */
+  /**
+   * Engine-base unmatched lists (before user decisions). Kept for callers;
+   * no longer read — unmatched rows come from classifyTransactions.
+   */
   baseMissingFromBooks: Txn[];
   baseMissingFromBank: Txn[];
   /** Bank txn IDs the user added to the reconciliation as real entries. */
@@ -128,8 +132,6 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     compositeMatches,
     bankTxns,
     ledgerTxns,
-    baseMissingFromBooks,
-    baseMissingFromBank,
     userAddedEntries,
     acknowledgedBankIds,
     balanceProof,
@@ -198,23 +200,11 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     });
   }
 
-  // -- Missing from books: engine base + both sides of rejected matches --
-  const rejectedBankIds = new Set(
-    matches.filter((m) => m.status === "rejected").map((m) => m.bankTxnId)
-  );
-  const rejectedLedgerIds = new Set(
-    matches.filter((m) => m.status === "rejected").map((m) => m.ledgerTxnId)
-  );
-  const rejectedComposites = compositeMatches.filter((c) => c.status === "rejected");
-
-  const missingBooksTxns: Txn[] = [
-    ...baseMissingFromBooks,
-    ...bankTxns.filter((t) => rejectedBankIds.has(t.id)),
-    ...rejectedComposites.flatMap((c) => {
-      const t = bankById.get(c.bankTxnId);
-      return t ? [t] : [];
-    }),
-  ].filter((t) => !addedIds.has(t.id));
+  // -- Unmatched rows: the shared classification the results screen and
+  // the exports use (RECON-009) — never the engine base lists plus rejected
+  // rows, which lost the unpicked options of an accepted ambiguous group.
+  const classified = classifyTransactions(matches, compositeMatches, bankTxns, ledgerTxns);
+  const missingBooksTxns: Txn[] = classified.unmatchedBank.filter((t) => !addedIds.has(t.id));
 
   const missingBooksItems: ReconContextItem[] = missingBooksTxns.map((t) => ({
     source: "bank",
@@ -227,17 +217,7 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     ],
   }));
 
-  // -- Missing from bank: engine base + rejected ledger sides, minus acknowledged --
-  const missingBankTxns: Txn[] = [
-    ...baseMissingFromBank,
-    ...ledgerTxns.filter((t) => rejectedLedgerIds.has(t.id)),
-    ...rejectedComposites.flatMap((c) =>
-      c.ledgerTxnIds.flatMap((id) => {
-        const t = ledgerById.get(id);
-        return t ? [t] : [];
-      })
-    ),
-  ].filter((t) => !acknowledgedIds.has(t.id));
+  const missingBankTxns: Txn[] = classified.unmatchedLedger.filter((t) => !acknowledgedIds.has(t.id));
 
   const missingBankItems: ReconContextItem[] = missingBankTxns.map((t) => ({
     source: "ledger",

@@ -8,6 +8,7 @@
 import { enrichReasons } from "./engine";
 import { sourceLabel } from "@/lib/import/provenance";
 import type { Match, Txn, BalanceProof, AnyCompositeMatch } from "./types";
+import { classifyTransactions } from "./classify";
 import type {
   ReviewItem,
   CompositeReviewItem,
@@ -268,8 +269,10 @@ export function buildDashboardData(
   compositeMatches: AnyCompositeMatch[],
   bankTxns: Txn[],
   ledgerTxns: Txn[],
-  baseMissingFromBooks: Txn[],
-  baseMissingFromBank: Txn[],
+  // Kept for callers; no longer read — unmatched rows are classified from
+  // the full row lists (see classifyTransactions).
+  _baseMissingFromBooks: Txn[],
+  _baseMissingFromBank: Txn[],
   addedTxnIds: ReadonlySet<string> = new Set(),
   acknowledgedBankIds: ReadonlySet<string> = new Set()
 ): {
@@ -288,7 +291,6 @@ export function buildDashboardData(
     (m) => m.status === "accepted" || m.status === "manual"
   );
   const suggested = matches.filter((m) => m.status === "suggested");
-  const rejected = matches.filter((m) => m.status === "rejected");
 
   // Composite match buckets
   const acceptedComposites = compositeMatches.filter(
@@ -297,25 +299,15 @@ export function buildDashboardData(
   const suggestedComposites = compositeMatches.filter(
     (c) => c.status === "suggested"
   );
-  const rejectedComposites = compositeMatches.filter(
-    (c) => c.status === "rejected"
-  );
 
-  // Rejected one-to-one: both sides become unmatched
-  const rejectedBankIds = new Set(rejected.map((m) => m.bankTxnId));
-  const rejectedLedgerIds = new Set(rejected.map((m) => m.ledgerTxnId));
-
-  // All missing-from-books candidates (engine base + rejected matches/composites)
-  const allMissingFromBooks: MissingTxn[] = [
-    ...baseMissingFromBooks.map((t) => toMissingTxn(t, "bank")),
-    ...bankTxns
-      .filter((t) => rejectedBankIds.has(t.id))
-      .map((t) => toMissingTxn(t, "bank")),
-    ...rejectedComposites.flatMap((c) => {
-      const t = bankTxns.find((b) => b.id === c.bankTxnId);
-      return t ? [toMissingTxn(t, "bank")] : [];
-    }),
-  ];
+  // RECON-009: unmatched rows come from the shared classification
+  // (lib/recon/classify), the same one both exports use — NOT from the
+  // engine's base lists plus rejected rows. The base lists leave out every
+  // row the engine offered in a suggestion, so accepting one option of an
+  // ambiguous group made the unpicked option's rows vanish from this screen
+  // (the exports still listed them).
+  const classified = classifyTransactions(matches, compositeMatches, bankTxns, ledgerTxns);
+  const allMissingFromBooks: MissingTxn[] = classified.unmatchedBank.map((t) => toMissingTxn(t, "bank"));
 
   // Split by whether the user has added them to the reconciliation
   const missingFromBooks = allMissingFromBooks.filter(
@@ -325,19 +317,7 @@ export function buildDashboardData(
     addedTxnIds.has(t.txnId)
   );
 
-  // All missing-from-bank candidates
-  const allMissingFromBank: MissingTxn[] = [
-    ...baseMissingFromBank.map((t) => toMissingTxn(t, "ledger")),
-    ...ledgerTxns
-      .filter((t) => rejectedLedgerIds.has(t.id))
-      .map((t) => toMissingTxn(t, "ledger")),
-    ...rejectedComposites.flatMap((c) =>
-      c.ledgerTxnIds.flatMap((id) => {
-        const t = ledgerTxns.find((l) => l.id === id);
-        return t ? [toMissingTxn(t, "ledger")] : [];
-      })
-    ),
-  ];
+  const allMissingFromBank: MissingTxn[] = classified.unmatchedLedger.map((t) => toMissingTxn(t, "ledger"));
 
   // Split by whether the user has acknowledged them
   const missingFromBank = allMissingFromBank.filter(

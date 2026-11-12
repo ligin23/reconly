@@ -13,6 +13,8 @@ type MissingItemRowTxn = {
   type: TxnType;
   /** Provenance, e.g. "bank-march.csv · row 42". */
   source?: string;
+  /** Stable engine transaction ID (exposed for checks, never shown). */
+  txnId?: string;
 };
 
 type MissingItemRowProps = {
@@ -39,6 +41,9 @@ export function MissingItemRow({
   return (
     <div
       className="txn m-txn"
+      data-testid="missing-item"
+      data-txn-id={tx.txnId}
+      data-signed-cents={tx.type === "in" ? tx.amount : -tx.amount}
       style={{
         display: "grid",
         gridTemplateColumns: "64px 1fr auto auto",

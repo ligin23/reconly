@@ -58,6 +58,50 @@ export async function downloadPdfReport(ctx: PdfExportContext): Promise<void> {
  * Build the report document. Everything it prints comes from the shared
  * report model (report-model.ts), which is what the unit tests check.
  */
+/** Header title: at most this many lines at 22pt before it is shortened. */
+const TITLE_MAX_LINES = 3;
+/** Minimum space between the footer text and the page number (pt). */
+const FOOTER_GAP = 16;
+
+/** Minimal slice of the jsPDF API the layout helpers need (testable). */
+export type TextMeasurer = {
+  getTextWidth: (text: string) => number;
+  splitTextToSize: (text: string, maxWidth: number) => string[];
+};
+
+/**
+ * Shorten `text` with "…" so it is at most `maxWidth` wide in the current
+ * font. Returns the text unchanged when it already fits.
+ */
+export function fitWidth(m: TextMeasurer, text: string, maxWidth: number): string {
+  if (m.getTextWidth(text) <= maxWidth) return text;
+  const ell = "…";
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (m.getTextWidth(text.slice(0, mid).trimEnd() + ell) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo === 0 ? ell : text.slice(0, lo).trimEnd() + ell;
+}
+
+/** Wrap to `maxWidth`; beyond `maxLines`, the last kept line ends in "…". */
+export function wrapAndClamp(
+  m: TextMeasurer,
+  text: string,
+  maxWidth: number,
+  maxLines: number
+): { lines: string[]; truncated: boolean } {
+  // splitTextToSize breaks at spaces; a single over-long word is split too.
+  const all = m.splitTextToSize(text, maxWidth).map((l) => fitWidth(m, l, maxWidth));
+  if (all.length <= maxLines) return { lines: all, truncated: false };
+  const kept = all.slice(0, maxLines);
+  kept[maxLines - 1] = fitWidth(m, kept[maxLines - 1] + " " + all[maxLines], maxWidth);
+  if (!kept[maxLines - 1].endsWith("…")) kept[maxLines - 1] = fitWidth(m, kept[maxLines - 1] + " …", maxWidth);
+  return { lines: kept, truncated: true };
+}
+
 export async function buildPdfDocument(ctx: PdfExportContext) {
   const model = buildReportModel(ctx);
   // Dynamic import keeps jsPDF out of the server-side bundle.
@@ -96,12 +140,26 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
   doc.text("RECONLY  ·  RECONCILIATION REPORT", ML, y);
   y += 28;
 
-  // Account + period headline
+  // Account + period headline. RECON-010: the title used to be drawn on one
+  // line with no width limit, so a long account name ran past the right
+  // margin and off the page. It now wraps inside the margins; past
+  // TITLE_MAX_LINES it is shortened with "…" — the full name is always in
+  // the Executive summary's "Account" row (or printed in full just below
+  // when a report has no executive summary).
   doc.setFont("helvetica", "bold");
   doc.setFontSize(22);
   doc.setTextColor(...C.ink);
-  doc.text(ctx.accountName, ML, y);
-  y += 26;
+  const title = wrapAndClamp(doc, ctx.accountName, CW, TITLE_MAX_LINES);
+  doc.text(title.lines, ML, y, { lineHeightFactor: 1.15 });
+  y += 26 * title.lines.length;
+  if (title.truncated && !model.summary) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(...C.ink2);
+    const full: string[] = doc.splitTextToSize(`Account: ${ctx.accountName}`, CW);
+    doc.text(full, ML, y - 8);
+    y += 11 * full.length;
+  }
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(12);
@@ -706,12 +764,16 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
     doc.setTextColor(...C.ink3);
-    doc.text(
-      `${ctx.accountName}  ·  ${formatPeriod(ctx.periodStart, ctx.periodEnd)}`,
-      ML,
-      PH - 24
-    );
-    doc.text(`Page ${i} of ${totalPages}`, MR, PH - 24, { align: "right" });
+    // RECON-010: the running footer used to print the full account name
+    // and the period on the same baseline as the right-aligned page number,
+    // so a long name ran underneath "Page n of N" (overlapping letters) and
+    // off the page. The name part is now shortened to the space left of
+    // the page number; the period is always kept whole.
+    const pageLabel = `Page ${i} of ${totalPages}`;
+    const period = `  ·  ${formatPeriod(ctx.periodStart, ctx.periodEnd)}`;
+    const room = CW - doc.getTextWidth(pageLabel) - FOOTER_GAP - doc.getTextWidth(period);
+    doc.text(`${fitWidth(doc, ctx.accountName, room)}${period}`, ML, PH - 24);
+    doc.text(pageLabel, MR, PH - 24, { align: "right" });
   }
 
   return doc;
