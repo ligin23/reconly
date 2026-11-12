@@ -10,6 +10,9 @@
 
 import { sourceLabel } from "@/lib/import/provenance";
 import { groupStatus, importCounts, unresolvedGroupCount } from "@/lib/import/duplicates";
+import { describeDuplicateDecision } from "@/lib/import/duplicate-decision";
+import { NET_LABELS, netDifferenceSentence } from "@/lib/review/net-difference";
+import { statementOutcomeText } from "@/lib/review/statement-summary";
 import type { Txn } from "@/lib/recon/types";
 import { formatPeriod } from "@/lib/data/utils";
 import { MONTH_STATUS_LABEL } from "@/lib/review/months";
@@ -49,7 +52,15 @@ export function shortDate(iso: string): string {
 }
 
 /** One transaction on one side. `source` is "" when provenance is unknown. */
-export type SideLine = { date: string; description: string; amount: string; source: string };
+export type SideLine = {
+  date: string;
+  description: string;
+  /** Display text, e.g. "($59.99)". */
+  amount: string;
+  /** The same amount as signed cents — what a spreadsheet cell stores. */
+  amountCents: number;
+  source: string;
+};
 
 /**
  * One row of a two-sided table (bank on the left, books on the right).
@@ -67,13 +78,35 @@ export type PairLine = {
   booksAmount: string;
   booksSource: string;
   note: string;
+  /**
+   * Signed cents for spreadsheet cells. A RAW transaction amount appears
+   * here exactly once: `bankAmountCents` on a pair or on the bank row of a
+   * group, `booksAmountCents` on a pair or on each entry of a group. A
+   * group's subtotal is NOT a transaction, so it is carried separately in
+   * `groupTotalCents` and never in an amount column — summing a column can
+   * then never count a grouped match twice. Entries listed as OPTIONS of an
+   * unresolved ambiguous group may repeat across options, so they carry no
+   * numeric amount either.
+   */
+  bankAmountCents: number | null;
+  booksAmountCents: number | null;
+  groupTotalCents: number | null;
 };
 
 export type DuplicateLine = SideLine & {
   side: "Bank" | "Books";
   /** "Set aside automatically" / "Set aside by you" / "Still included". */
   status: string;
+  /** detection + automatic step + decision + current status, in one text. */
   reason: string;
+  /** Why the rows were flagged — the detector's evidence, unchanged since import. */
+  detection: string;
+  /** What Reconly did on its own at import. */
+  automatic: string;
+  /** What the user has decided since. */
+  decision: string;
+  /** Whether this row is counted right now. */
+  currentStatus: string;
 };
 
 /** How sure the report is about each statement it makes. */
@@ -106,9 +139,36 @@ export type StatementRow = {
   difference: string;
   status: string;
   explanation: string;
+  /** Numeric forms for spreadsheet cells (signed cents; null = none). */
+  openingCents: number | null;
+  /** Where the opening figure came from: "stated, line 3", "calculated…". */
+  openingNote: string;
+  netActivityCents: number;
+  rowCount: number;
+  closingCents: number | null;
+  closingNote: string;
+  differenceCents: number | null;
 };
 
-export type ExceptionRow = { type: string; date: string; description: string; amount: string; source: string };
+export type ExceptionRow = {
+  type: string;
+  date: string;
+  description: string;
+  amount: string;
+  /** Signed cents; null when the exception has no amount. */
+  amountCents: number | null;
+  source: string;
+};
+
+/** Net activity of the rows in use — transaction totals, not balances. */
+export type ReportNet = {
+  bankNet: number;
+  ledgerNet: number;
+  /** Bank rows the user added to the reconciliation. */
+  addedNet: number;
+  /** bankNet − ledgerNet − addedNet (signed). */
+  difference: number;
+};
 
 export type ReportSummary = {
   executive: [string, string][];
@@ -152,6 +212,8 @@ export type ReportModel = {
    */
   summary: ReportSummary | null;
   buckets: ExportBuckets;
+  /** Signed net activity figures behind the "difference". */
+  net: ReportNet;
 };
 
 const src = (t: Pick<Txn, "sourceFile" | "sourceLine">) => sourceLabel(t) ?? "";
@@ -159,12 +221,18 @@ const side = (t: Txn): SideLine => ({
   date: shortDate(t.date),
   description: t.description,
   amount: dollars(t.amount),
+  amountCents: t.amount,
   source: src(t),
 });
 
 const EMPTY_BANK = { bankDate: "", bankDescription: "", bankAmount: "", bankSource: "" };
 
-function partLines(parts: Txn[], label: (i: number, n: number) => string): PairLine[] {
+/**
+ * `numeric: false` for the options of an unresolved ambiguous group — the
+ * same entry can be listed under several options, so it must not be
+ * summable.
+ */
+function partLines(parts: Txn[], label: (i: number, n: number) => string, numeric = true): PairLine[] {
   return parts.map((p, i) => ({
     kind: "part" as const,
     ...EMPTY_BANK,
@@ -174,6 +242,9 @@ function partLines(parts: Txn[], label: (i: number, n: number) => string): PairL
     booksAmount: dollars(p.amount),
     booksSource: src(p),
     note: "",
+    bankAmountCents: null,
+    booksAmountCents: numeric ? p.amount : null,
+    groupTotalCents: null,
   }));
 }
 
@@ -189,6 +260,9 @@ function groupLine(c: ExportComposite, booksDescription: string, note: string, t
     booksAmount: total === null ? "" : dollars(total),
     booksSource: "",
     note,
+    bankAmountCents: c.bankTxn.amount,
+    booksAmountCents: null, // a subtotal, not a transaction — see PairLine
+    groupTotalCents: total,
   };
 }
 
@@ -216,7 +290,7 @@ function reviewCompositeLines(c: ExportComposite): PairLine[] {
         null
       ),
       ...c.combinations.flatMap((combo, o) =>
-        partLines(combo, (i, total) => `   option ${o + 1} of ${k} · entry ${i} of ${total}`)
+        partLines(combo, (i, total) => `   option ${o + 1} of ${k} · entry ${i} of ${total}`, false)
       ),
     ];
   }
@@ -248,6 +322,36 @@ function duplicateSections(ctx: ExportContext): Pick<
   const setAsideIds = new Set(d.state.setAside.map((s) => s.txnId));
   const label = (t: Txn): "Bank" | "Books" => (t.source === "bank" ? "Bank" : "Books");
 
+  /**
+   * The four parts of a duplicate explanation, kept apart: why the rows
+   * were flagged (never rewritten), what Reconly did on its own, what the
+   * user decided, and whether THIS row counts right now.
+   */
+  const explain = (
+    g: (typeof d.groups)[number] | undefined,
+    currentStatus: string,
+    rowDecision?: string
+  ): Pick<DuplicateLine, "reason" | "detection" | "automatic" | "decision" | "currentStatus"> => {
+    const sum = g ? describeDuplicateDecision(g, d.state) : null;
+    const detection = sum?.detection ?? "Listed as a repeated row.";
+    const automatic = sum?.automatic ?? "";
+    const decision = rowDecision ?? sum?.decision ?? "";
+    return {
+      detection,
+      automatic,
+      decision,
+      currentStatus,
+      reason: [
+        `Why it was flagged: ${detection}`,
+        automatic ? `Automatic step: ${automatic}` : "",
+        decision ? `Your decision: ${decision}` : "",
+        `Current status: ${currentStatus}`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  };
+
   const setAsideLines: DuplicateLine[] = [];
   for (const s of d.state.setAside) {
     const t = byId.get(s.txnId);
@@ -259,9 +363,11 @@ function duplicateSections(ctx: ExportContext): Pick<
       ...side(t),
       side: label(t),
       status: s.by === "auto" ? "Set aside automatically" : "Set aside by you",
-      reason:
-        (g?.evidence[0]?.text ?? "Set aside as a repeated row.") +
-        (keptRef ? ` The copy still in use is ${keptRef}.` : ""),
+      ...explain(
+        g,
+        `This row is excluded from the reconciliation totals.${keptRef ? ` The copy still in use is ${keptRef}.` : ""}`,
+        s.by === "auto" ? "No decision from you — Reconly's automatic set-aside stands." : "You chose to set aside this row."
+      ),
     });
   }
 
@@ -275,7 +381,7 @@ function duplicateSections(ctx: ExportContext): Pick<
         ...side(t),
         side: label(t),
         status: "Still included",
-        reason: g.evidence[0]?.text ?? "",
+        ...explain(g, "This row is included in the reconciliation totals. The group still needs your decision."),
       });
     }
   }
@@ -294,9 +400,11 @@ function duplicateSections(ctx: ExportContext): Pick<
         ...side(t),
         side: label(t),
         status: "Reviewed and retained",
-        reason:
-          `Confirmed by you${decided} as separate transactions, so every row is kept and counted. ` +
-          `Why it was flagged: ${g.evidence[0]?.text ?? "the rows looked alike."}`,
+        ...explain(
+          g,
+          "This row is included in the reconciliation totals.",
+          `Confirmed by you${decided} as separate transactions, so every row is kept and counted.`
+        ),
       });
     }
   }
@@ -334,6 +442,9 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     booksAmount: dollars(p.ledgerTxn.amount),
     booksSource: src(p.ledgerTxn),
     note: withNote ? p.reasons.join("; ") || "Amounts similar, dates differ" : "",
+    bankAmountCents: p.bankTxn.amount,
+    booksAmountCents: p.ledgerTxn.amount,
+    groupTotalCents: null,
   });
 
   const matchedLines = [
@@ -362,6 +473,7 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
     date: shortDate(e.date),
     description: e.description,
     amount: dollars(e.amount),
+    amountCents: e.amount,
     source: bankById.has(e.txnId) ? src(bankById.get(e.txnId)!) : "",
   }));
   everyLine.push(...missingFromBooks, ...missingFromBank, ...acknowledged, ...added);
@@ -389,7 +501,13 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
           ["Possible duplicates reviewed and retained as separate", String(dup.reviewedSeparateLines.length)],
         ];
 
+  const bankNet = sum(ctx.bankTxns);
+  const ledgerNet = sum(ctx.ledgerTxns);
+  const addedNet = ctx.userAddedEntries.reduce((s, e) => s + e.amount, 0);
+  const net: ReportNet = { bankNet, ledgerNet, addedNet, difference: bankNet - ledgerNet - addedNet };
+
   const model = {
+    net,
     statusSummary,
     verdict: verdictText(ctx, buckets),
     hasProvenance: everyLine.some((l) => l.source || l.bankSource || l.booksSource),
@@ -409,17 +527,37 @@ export function buildReportModel(ctx: ExportContext): ReportModel {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Where a statement balance came from, as its own phrase. */
+function balanceNote(v: StatementCheck["opening"]): string {
+  if (!v) return "Not stated";
+  return v.source === "calculated"
+    ? "calculated — not stated in the file"
+    : v.source === "running"
+      ? "last running balance in the file"
+      : v.line
+        ? `stated, line ${v.line}`
+        : "stated";
+}
+
 function balanceText(v: StatementCheck["opening"]): string {
   if (!v) return "Not stated";
-  const note =
-    v.source === "calculated"
-      ? " (calculated — not stated in the file)"
-      : v.source === "running"
-        ? " (last running balance in the file)"
-        : v.line
-          ? ` (stated, line ${v.line})`
-          : " (stated)";
-  return dollars(v.cents) + note;
+  return `${dollars(v.cents)} (${balanceNote(v)})`;
+}
+
+/**
+ * The net-activity rows both reports print. Signed (negative in
+ * parentheses): the difference is bank minus ledger, never an absolute
+ * value presented without its direction.
+ */
+export function netRows(net: ReportNet): [string, string][] {
+  return [
+    [NET_LABELS.bank, dollars(net.bankNet)],
+    [NET_LABELS.ledger, dollars(net.ledgerNet)],
+    ...(net.addedNet !== 0
+      ? ([["Bank items added to the reconciliation by you", dollars(net.addedNet)]] as [string, string][])
+      : []),
+    [NET_LABELS.difference, dollars(net.difference)],
+  ];
 }
 
 /**
@@ -455,17 +593,6 @@ function buildSummary(
   const bankFiles = statements.statements.length;
   // The same verdict the results screen shows, from the same function.
   const verdict = reportVerdict(ctx, b);
-  const countsText = (c: Record<StatementStatus, number>) =>
-    [
-      c.verified > 0 ? `${c.verified} verified` : "",
-      c["running-consistent"] > 0 ? `${c["running-consistent"]} running balance consistent only` : "",
-      c.mismatch > 0 ? `${c.mismatch} mismatch` : "",
-      c.conflict > 0 ? `${c.conflict} conflicting` : "",
-      c["convention-review"] > 0 ? `${c["convention-review"]} sign convention needs review` : "",
-      c.insufficient > 0 ? `${c.insufficient} not verified` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
   const coverage = months.coverage.findings.map((f) => f.text);
 
   const executive: [string, string][] = [
@@ -489,7 +616,7 @@ function buildSummary(
           ? "Complete — every possible duplicate was set aside or confirmed as separate"
           : "No repeated rows were found in the uploaded files",
     ],
-    ["Unexplained difference", dollars(Math.abs(ctx.unexplainedDifference))],
+    ...netRows(model.net),
     ["Confirmed matches", `${months.overview.confirmedMatches} (${months.overview.crossMonthMatches} of all matches cross a month boundary)`],
     ["Unmatched transactions", `${unmatchedBank} on the bank statement · ${unmatchedLedger} in your records`],
     ["Suggested matches awaiting review", String(months.overview.awaitingReviewMatches)],
@@ -497,7 +624,7 @@ function buildSummary(
       "Statement verification",
       bankFiles === 0
         ? "Not verified — no statement information available"
-        : `${STATEMENT_SUMMARY_LABEL[verdict.statement]} — ${countsText(sc)} (of ${plural(bankFiles, "bank file")})`,
+        : `${STATEMENT_SUMMARY_LABEL[verdict.statement]} — ${statementOutcomeText(sc)} (of ${plural(bankFiles, "bank file")})`,
     ],
     ["Source coverage", `${months.coverage.label} — ${plural(coverage.length, "note")} below`],
   ];
@@ -519,10 +646,13 @@ function buildSummary(
   if (auto > 0) add("Verified facts", `${plural(auto, "repeated row")} proven by the files to be ${auto === 1 ? "a copy" : "copies"} (set aside automatically, not counted).`);
 
   if (ctx.unexplainedDifference !== 0) {
-    add("Potential discrepancies", `The bank rows and records rows in use differ by ${dollars(Math.abs(ctx.unexplainedDifference))}.`);
+    add(
+      "Potential discrepancies",
+      `${netDifferenceSentence(model.net)} These are totals of the imported transactions in use, not account balances, and the size of the difference does not indicate its cause.`
+    );
   }
-  if (unmatchedBank > 0) add("Potential discrepancies", `${plural(unmatchedBank, "bank transaction")} with no match in your records.`);
-  if (unmatchedLedger > 0) add("Potential discrepancies", `${plural(unmatchedLedger, "records entry", "records entries")} with no match on the bank statement.`);
+  if (unmatchedBank > 0) add("Potential discrepancies", `${plural(unmatchedBank, "bank transaction")} with no match in your records. The cause is not established.`);
+  if (unmatchedLedger > 0) add("Potential discrepancies", `${plural(unmatchedLedger, "records entry", "records entries")} with no confirmed bank match. The cause is not established — they are not assumed to be timing differences.`);
   if (model.reviewCount > 0) add("Potential discrepancies", `${plural(model.reviewCount, "suggested match", "suggested matches")} not yet confirmed or rejected.`);
   if (unresolvedDuplicateGroups > 0) add("Potential discrepancies", `${plural(unresolvedDuplicateGroups, "possible duplicate group")} still counted and not yet reviewed.`);
   for (const s of statements.statements.filter(
@@ -545,7 +675,7 @@ function buildSummary(
   if (confirmedByUser > 0) add("Your decisions", `${plural(confirmedByUser, "suggested match", "suggested matches")} confirmed by you.`);
   if (rejected > 0) add("Your decisions", `${plural(rejected, "suggested match", "suggested matches")} rejected by you.`);
   if (model.added.length > 0) add("Your decisions", `${plural(model.added.length, "bank transaction")} added to the reconciliation by you (to be recorded in your books).`);
-  if (model.acknowledged.length > 0) add("Your decisions", `${plural(model.acknowledged.length, "records entry", "records entries")} marked by you as expected (not yet cleared).`);
+  if (model.acknowledged.length > 0) add("Your decisions", `${plural(model.acknowledged.length, "records entry", "records entries")} marked by you as expected to clear later (your classification; not verified by Reconly).`);
   const byUser = ctx.duplicates?.state.setAside.filter((x) => x.by === "user").length ?? 0;
   if (byUser > 0) add("Your decisions", `${plural(byUser, "row")} set aside by you as repeated.`);
   if (model.reviewedSeparateLines.length > 0) add("Your decisions", `${plural(model.reviewedSeparateLines.length, "row")} reviewed by you and kept as separate transactions.`);
@@ -577,11 +707,18 @@ function buildSummary(
     difference: s.difference === null ? "Not computable" : dollars(s.difference),
     status: STATEMENT_STATUS_LABEL[s.status],
     explanation: s.reasons.join(" "),
+    openingCents: s.opening ? s.opening.cents : null,
+    openingNote: balanceNote(s.opening),
+    netActivityCents: s.netActivity,
+    rowCount: s.rowCount,
+    closingCents: s.closing ? s.closing.cents : null,
+    closingNote: balanceNote(s.closing),
+    differenceCents: s.difference,
   }));
 
   const exceptions: ExceptionRow[] = [
     ...model.missingFromBooks.map((l) => ({ type: "On bank statement, not in your records", ...l })),
-    ...model.missingFromBank.map((l) => ({ type: "In your records, not on bank statement", ...l })),
+    ...model.missingFromBank.map((l) => ({ type: "In your records only — no confirmed bank match", ...l })),
     ...model.reviewLines
       .filter((l) => l.kind !== "part")
       .map((l) => ({
@@ -589,6 +726,7 @@ function buildSummary(
         date: l.bankDate,
         description: l.bankDescription,
         amount: l.bankAmount,
+        amountCents: l.bankAmountCents,
         source: l.bankSource,
       })),
     ...model.possibleDuplicateLines.map((l) => ({
@@ -596,6 +734,7 @@ function buildSummary(
       date: l.date,
       description: l.description,
       amount: l.amount,
+      amountCents: l.amountCents,
       source: l.source,
     })),
     ...statements.statements
@@ -605,6 +744,7 @@ function buildSummary(
         date: s.activity ? shortDate(s.activity.end) : "",
         description: s.reasons[0] ?? "",
         amount: s.difference === null ? "" : dollars(s.difference),
+        amountCents: s.difference,
         source: s.file,
       })),
   ];

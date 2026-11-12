@@ -7,7 +7,7 @@
 // module; nothing is calculated here.
 // ============================================================
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Txn } from "@/lib/recon/types";
 import { money } from "@/lib/sample-data";
 import { sourceLabel } from "@/lib/import/provenance";
@@ -334,9 +334,22 @@ function MonthDetail({ m, onOpenDuplicates }: { m: MonthSummary; onOpenDuplicate
       />
 
       <div data-testid="month-statement" style={{ marginTop: 14 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)", marginBottom: 4 }}>
-          Statement balance check
-        </div>
+        {/* Focusable so "Show statements" can land here for keyboard and
+            screen-reader users, not just scroll past it. */}
+        <h3
+          data-testid="month-statement-heading"
+          tabIndex={-1}
+          style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--ink)",
+            margin: "0 0 4px",
+            scrollMarginTop: 16,
+            outlineOffset: 3,
+          }}
+        >
+          Statement balance check — {m.label}
+        </h3>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", fontSize: 12.5, color: "var(--ink-2)" }}>
           <StatementChip status={m.statement.status} label={m.statement.label} />
           <span>{m.statement.detail}</span>
@@ -393,9 +406,41 @@ function MonthDetail({ m, onOpenDuplicates }: { m: MonthSummary; onOpenDuplicate
   );
 }
 
+/** Fired to open and focus the statement balance results. */
+export const SHOW_STATEMENTS_EVENT = "reconly:show-statements";
+
+const STATEMENT_ATTENTION: readonly string[] = ["mismatch", "conflict", "convention-review"];
+
+/** Scroll an element fully into view (top of the scroll area) and focus it. */
+function revealAndFocus(el: HTMLElement | null) {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 export function MonthReviewPanel({ review }: { review: MonthReview }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [showCoverage, setShowCoverage] = useState(false);
+  // "Show statements" (feature tour, or anything else that fires the
+  // event): open the month whose statement most needs attention — a
+  // mismatch / conflict first, otherwise the first month — then bring its
+  // statement check into view and move focus to its heading.
+  const [statementJump, setStatementJump] = useState(0);
+  useEffect(() => {
+    const onShow = () => {
+      const target =
+        review.months.find((m) => STATEMENT_ATTENTION.includes(m.statement.status)) ?? review.months[0];
+      if (!target) return;
+      setSelected(target.month);
+      setStatementJump((n) => n + 1);
+    };
+    window.addEventListener(SHOW_STATEMENTS_EVENT, onShow);
+    return () => window.removeEventListener(SHOW_STATEMENTS_EVENT, onShow);
+  }, [review]);
+  useEffect(() => {
+    if (statementJump === 0) return;
+    revealAndFocus(document.querySelector<HTMLElement>('[data-testid="month-statement-heading"]'));
+  }, [statementJump]);
   const o = review.overview;
   const selectedMonth = review.months.find((m) => m.month === selected) ?? null;
   const openDuplicates = () =>
@@ -636,6 +681,20 @@ export function MonthReviewPanel({ review }: { review: MonthReview }) {
  */
 export function SourceChecksCard({ review, statements }: { review: MonthReview; statements: StatementReview }) {
   const [open, setOpen] = useState(false);
+  // Single-month data has no month table: "Show statements" opens this card.
+  const [statementJump, setStatementJump] = useState(0);
+  useEffect(() => {
+    const onShow = () => {
+      setOpen(true);
+      setStatementJump((n) => n + 1);
+    };
+    window.addEventListener(SHOW_STATEMENTS_EVENT, onShow);
+    return () => window.removeEventListener(SHOW_STATEMENTS_EVENT, onShow);
+  }, []);
+  useEffect(() => {
+    if (statementJump === 0) return;
+    revealAndFocus(document.querySelector<HTMLElement>('[data-testid="source-checks-headline"]'));
+  }, [statementJump]);
   const c = statements.counts;
   const warnings = review.coverage.findings.filter(
     (f) => f.kind !== "balances-not-provided" && f.kind !== "statement-balances"
@@ -655,7 +714,9 @@ export function SourceChecksCard({ review, statements }: { review: MonthReview; 
           <div className="eyebrow" style={{ color: "var(--ink-3)", marginBottom: 3 }}>Source checks</div>
           <span
             data-testid="source-checks-headline"
-            style={{ fontWeight: 600, color: problem ? "var(--warn-ink)" : "var(--ink)" }}
+            tabIndex={-1}
+            style={{
+              scrollMarginTop: 16, fontWeight: 600, color: problem ? "var(--warn-ink)" : "var(--ink)" }}
           >
             {headline}
           </span>

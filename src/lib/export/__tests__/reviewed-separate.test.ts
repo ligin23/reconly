@@ -65,7 +65,13 @@ async function sheetText(ctx: ExportContext) {
     byRow.set(Number(m[2]), list);
   }
   const lines = [...byRow.entries()].sort((a, b) => a[0] - b[0]).map(([, r]) => Array.from(r, (v) => v ?? ""));
-  return { lines, text: lines.map((l) => l.join(" | ")).join("\n"), allStrings: cells.every(([, c]) => c.t === "s") };
+  // Text is text; the only numbers are amounts and counts Reconly computed; nothing is a formula.
+  const safe = cells.every(
+    ([, c]) =>
+      (c as { f?: string }).f === undefined &&
+      (c.t === "s" || (c.t === "n" && typeof (c.v as unknown) === "number"))
+  );
+  return { lines, text: lines.map((l) => l.join(" | ")).join("\n"), safe };
 }
 
 describe("report model — groups confirmed as separate", () => {
@@ -117,20 +123,24 @@ describe("report model — groups confirmed as separate", () => {
   it("a confirmation recorded without a timestamp (older state) still reports, without a date", () => {
     const noDate: DuplicateState = { ...allKept, dismissedAt: undefined };
     const m = buildReportModel(ctxFor(noDate));
-    expect(m.reviewedSeparateLines[0].reason).toMatch(/^Confirmed by you as separate transactions/);
+    expect(m.reviewedSeparateLines[0].decision).toMatch(/^Confirmed by you as separate transactions/);
   });
 });
 
 describe("Excel workbook — confirmed-separate groups", () => {
-  it("has a labelled section with file, row and reason; every cell a string", async () => {
-    const { lines, text, allStrings } = await sheetText(ctxFor(allKept));
+  it("has a labelled section with file, row and reason; text is text and amounts are numbers", async () => {
+    const { lines, text, safe } = await sheetText(ctxFor(allKept));
     expect(text).toContain("Reviewed and retained — confirmed as separate  (4) — counted above");
     expect(text).toContain("Financial reconciliation | Totals agree and nothing is left open");
     expect(text).toContain("Duplicate review | Complete");
     const row = lines.find((l) => l[4] === "ledger-jan.csv · row 4")!;
-    expect(row.slice(0, 4)).toEqual(["Jan 28, 2026", "PARKING GARAGE", "($8.00)", "Books"]);
-    expect(row[5]).toMatch(/^Reviewed and retained\. Confirmed by you on Nov 10, 2026 as separate transactions/);
-    expect(allStrings).toBe(true);
+    expect(row.slice(0, 4)).toEqual(["Jan 28, 2026", "PARKING GARAGE", "-8", "Books"]); // −8.00 as a number
+    expect(row[5]).toBe("Reviewed and retained");
+    expect(row[6]).toMatch(/^The same date, amount and description appear more than once/); // detection
+    expect(row[7]).toMatch(/^No row was set aside automatically/); // automatic step
+    expect(row[8]).toMatch(/^Confirmed by you on Nov 10, 2026 as separate transactions/); // decision
+    expect(row[9]).toBe("This row is included in the reconciliation totals."); // current status
+    expect(safe).toBe(true);
   });
 
   it("while unreviewed, says review is needed and has no retained section", async () => {

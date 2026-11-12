@@ -18,6 +18,8 @@ type MissingItemRowTxn = {
 type MissingItemRowProps = {
   tx: MissingItemRowTxn;
   hint: string;
+  /** Optional informational flag, e.g. a possible amount difference. */
+  flag?: string;
   actionLabel: string;
   actionIcon?: IconName;
   onAction?: () => void;
@@ -28,6 +30,7 @@ type MissingItemRowProps = {
 export function MissingItemRow({
   tx,
   hint,
+  flag,
   actionLabel,
   actionIcon,
   onAction,
@@ -69,6 +72,20 @@ export function MissingItemRow({
         <span style={{ display: "block", fontSize: 12, color: "var(--ink-3)" }}>
           {hint}
         </span>
+        {flag && (
+          <span
+            data-testid="amount-difference-hint"
+            style={{
+              display: "block",
+              fontSize: 12,
+              fontWeight: 500,
+              color: "var(--warn-ink)",
+              marginTop: 2,
+            }}
+          >
+            {flag}
+          </span>
+        )}
         {tx.source && (
           <span
             className="mono"

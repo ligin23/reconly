@@ -59,8 +59,8 @@ export function toMissingTxn(txn: Txn, source: "bank" | "ledger"): MissingTxn {
   const base = toSimpleTxn(txn);
   const hint =
     source === "bank"
-      ? "This transaction is on your bank statement but doesn't have a matching entry in your records yet."
-      : "This is in your records but your bank hasn't processed it yet — usually just a matter of timing.";
+      ? "This transaction is on your bank statement and has no confirmed match in your records."
+      : "This entry is in your records and has no confirmed bank match.";
   const from = sourceLabel(txn);
   return { ...base, txnId: txn.id, hint, ...(from ? { source: from } : {}) };
 }
@@ -176,6 +176,85 @@ export function toCompositeReviewItem(
   };
 }
 
+// ---- Review decisions the user has made ------------------------------
+
+/**
+ * One suggestion the user has already answered — listed on the results
+ * screen so a decision can be found again and taken back.
+ */
+export type DecidedItem = {
+  /** Match id (one-to-one) or composite id — what "undo" acts on. */
+  id: string;
+  kind: "pair" | "group";
+  decision: "accepted" | "rejected";
+  bankDate: string;
+  bankDesc: string;
+  bankSource?: string;
+  /** The records side: one description, or "3 entries: A; B; C". */
+  booksDesc: string;
+  booksDate: string;
+  booksSource?: string;
+  amount: number; // cents, positive
+  type: TxnType;
+  /** True when the bank row and a records row fall in different months. */
+  crossMonth: boolean;
+};
+
+function toDecidedItems(
+  matches: Match[],
+  composites: AnyCompositeMatch[],
+  bankTxns: Txn[],
+  ledgerTxns: Txn[]
+): DecidedItem[] {
+  const bankById = new Map(bankTxns.map((t) => [t.id, t]));
+  const ledgerById = new Map(ledgerTxns.map((t) => [t.id, t]));
+  const month = (iso: string) => iso.slice(0, 7);
+  const out: DecidedItem[] = [];
+  for (const m of matches) {
+    // Exact matches were confirmed by the engine, not decided by the user.
+    if (m.type === "exact" || m.status === "suggested") continue;
+    const bank = bankById.get(m.bankTxnId);
+    const ledger = ledgerById.get(m.ledgerTxnId);
+    if (!bank || !ledger) continue;
+    const { amount, type } = signedToDisplay(bank.amount);
+    out.push({
+      id: m.id,
+      kind: "pair",
+      decision: m.status === "rejected" ? "rejected" : "accepted",
+      bankDate: formatDisplayDate(bank.date),
+      bankDesc: bank.description,
+      ...(sourceLabel(bank) ? { bankSource: sourceLabel(bank)! } : {}),
+      booksDesc: ledger.description,
+      booksDate: formatDisplayDate(ledger.date),
+      ...(sourceLabel(ledger) ? { booksSource: sourceLabel(ledger)! } : {}),
+      amount,
+      type,
+      crossMonth: month(bank.date) !== month(ledger.date),
+    });
+  }
+  for (const c of composites) {
+    if (c.status === "suggested") continue;
+    const bank = bankById.get(c.bankTxnId);
+    if (!bank) continue;
+    const parts = c.ledgerTxnIds.map((id) => ledgerById.get(id)).filter((t): t is Txn => Boolean(t));
+    const { amount, type } = signedToDisplay(bank.amount);
+    out.push({
+      id: c.id,
+      kind: "group",
+      decision: c.status === "rejected" ? "rejected" : "accepted",
+      bankDate: formatDisplayDate(bank.date),
+      bankDesc: bank.description,
+      ...(sourceLabel(bank) ? { bankSource: sourceLabel(bank)! } : {}),
+      booksDesc: `${parts.length} entries: ${parts.map((p) => p.description).join("; ")}`,
+      booksDate: parts.length > 0 ? formatDisplayDate(parts[0].date) : "",
+      amount,
+      type,
+      crossMonth: parts.some((p) => month(p.date) !== month(bank.date)),
+    });
+  }
+  return out;
+}
+
 // ---- Dashboard display helpers -------------------------------------
 
 const MATCHED_DISPLAY_LIMIT = 12;
@@ -202,6 +281,8 @@ export function buildDashboardData(
   addedToReconciliation: MissingTxn[];
   missingFromBank: MissingTxn[];
   acknowledgedBank: MissingTxn[];
+  /** Suggestions the user has answered (accepted or rejected). */
+  decided: DecidedItem[];
 } {
   const accepted = matches.filter(
     (m) => m.status === "accepted" || m.status === "manual"
@@ -315,6 +396,7 @@ export function buildDashboardData(
     addedToReconciliation,
     missingFromBank,
     acknowledgedBank,
+    decided: toDecidedItems(matches, compositeMatches, bankTxns, ledgerTxns),
   };
 }
 

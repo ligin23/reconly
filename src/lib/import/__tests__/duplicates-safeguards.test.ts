@@ -122,7 +122,7 @@ describe("ambiguous reference numbers never prove a duplicate", () => {
   it("explains itself in plain words", () => {
     const [g] = pair(REF, ["01/05/2026,TRANSFER,-100.00,WIRE"], ["01/05/2026,TRANSFER,-100.00,WIRE"]);
     expect(g.evidence[0].text).toMatch(/isn't distinctive enough to prove/);
-    expect(g.evidence[0].text).toMatch(/nothing was set aside/);
+    expect(g.evidence[0].text).toMatch(/no row was set aside automatically/);
   });
 });
 

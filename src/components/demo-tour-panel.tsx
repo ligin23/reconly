@@ -5,6 +5,7 @@
 // of the Results screen (no separate demo screens).
 
 import { Icon } from "@/components/ui/icon";
+import { SHOW_STATEMENTS_EVENT } from "@/components/month-review-panel";
 import {
   ADVANCED_DEMO_BUSINESS,
   ADVANCED_DEMO_NOTICE,
@@ -17,6 +18,9 @@ import {
 function focusSection(testId: string) {
   const el = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
   if (!el) return;
+  // Keyboard and screen-reader users land on the section too.
+  if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+  el.focus({ preventScroll: true });
   el.scrollIntoView({ behavior: "smooth", block: "start" });
   el.setAttribute("data-demo-highlight", "");
   window.setTimeout(() => el.removeAttribute("data-demo-highlight"), 1800);
@@ -90,6 +94,12 @@ export function DemoTourPanel({
       const btn = document.querySelector<HTMLElement>('[data-testid="export-menu-btn"]');
       btn?.scrollIntoView({ block: "nearest" });
       btn?.click();
+      return;
+    }
+    if (t.kind === "statements") {
+      // Opens the month whose statement needs attention (February's
+      // mismatch in the demo), scrolls its heading into view and focuses it.
+      window.dispatchEvent(new CustomEvent(SHOW_STATEMENTS_EVENT));
       return;
     }
     if (t.kind === "tab") {

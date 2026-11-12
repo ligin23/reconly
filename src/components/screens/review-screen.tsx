@@ -28,6 +28,7 @@ function ReviewCard({
   exiting: ReviewDecision | null;
   onDecide: (decision: ReviewDecision) => void;
 }) {
+  const locked = exiting !== null;
   const exitStyle =
     exiting === "accept"
       ? { transform: "translateX(34px) rotate(2deg)", opacity: 0 }
@@ -237,10 +238,10 @@ function ReviewCard({
       </div>
 
       <div className="m-wrap" style={{ display: "flex", gap: 10, marginTop: 20 }}>
-        <Button variant="accept" block icon="check" onClick={() => onDecide("accept")}>
+        <Button variant="accept" block icon="check" disabled={locked} onClick={() => onDecide("accept")}>
           Yes, it&apos;s a match
         </Button>
-        <Button variant="reject" block icon="x" onClick={() => onDecide("reject")}>
+        <Button variant="reject" block icon="x" disabled={locked} onClick={() => onDecide("reject")}>
           Not a match
         </Button>
       </div>
@@ -532,7 +533,8 @@ function CompositeReviewCard({
       ? item.allCombinations![selectedComboIndex]
       : item.components;
 
-  const canAccept = !item.ambiguous || selectedComboIndex !== null;
+  const locked = exiting !== null;
+  const canAccept = !locked && (!item.ambiguous || selectedComboIndex !== null);
 
   const handleAccept = () => {
     if (!canAccept) return;
@@ -671,7 +673,9 @@ function CompositeReviewCard({
           <ComboPicker
             combinations={item.allCombinations!}
             selectedIndex={selectedComboIndex}
-            onSelect={setSelectedComboIndex}
+            onSelect={(i) => {
+              if (!locked) setSelectedComboIndex(i);
+            }}
             bankAmount={item.bankAmount}
           />
         </>
@@ -762,6 +766,7 @@ function CompositeReviewCard({
           variant="reject"
           block
           icon="x"
+          disabled={locked}
           onClick={() => onDecide("reject")}
         >
           {item.ambiguous ? "None of these" : "Not a match"}
@@ -799,13 +804,21 @@ type ReviewScreenProps = {
 };
 
 export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenProps) {
-  const [exiting, setExiting] = useState<ReviewDecision | null>(null);
   const decided = total - queue.length;
   const current = queue[0];
 
-  // The exit animation delays the decision by ~290ms. Capture WHICH item the
-  // user decided on (not "whatever is first when the timer fires"), and
-  // cancel the timer if the screen unmounts first.
+  // A decision is committed to the app's state the moment the user clicks
+  // (`onDecide` runs synchronously, before any animation). The exit animation
+  // then plays on a SNAPSHOT of the decided card. Leaving the screen
+  // mid-animation — "Results", the sidebar, browser Back — can therefore
+  // never lose the decision; it only cuts the animation short.
+  //
+  // `lockRef` is set synchronously so two clicks landing in the same frame
+  // (double-click, accept-then-reject) record one decision only; it is
+  // released when the animation ends. The parent additionally ignores any
+  // decision for an item that is no longer pending.
+  const [leaving, setLeaving] = useState<{ item: AnyReviewItem; decision: ReviewDecision } | null>(null);
+  const lockRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -815,17 +828,24 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
   );
 
   const handleDecide = (decision: ReviewDecision, meta?: ReviewMeta) => {
-    if (exiting || !current) return;
-    const itemId = current.id;
-    setExiting(decision);
+    if (lockRef.current || leaving || !current) return;
+    lockRef.current = true;
+    const item = current;
+    onDecide(decision, meta, item.id); // authoritative state updated now
+    setLeaving({ item, decision });
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      setExiting(null);
-      onDecide(decision, meta, itemId);
+      lockRef.current = false;
+      setLeaving(null);
     }, 290);
   };
 
-  if (!current) {
+  // While a decided card animates out it stays on screen (inert); the next
+  // pending item appears once the animation ends.
+  const shown = leaving?.item ?? current;
+  const remainingAfterShown = leaving ? queue.length : queue.length - 1;
+
+  if (!shown) {
     return (
       <div style={{ maxWidth: 560, margin: "0 auto" }}>
         <div
@@ -879,8 +899,8 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
             }}
           >
             {total === 0
-              ? "There were no uncertain pairs in this reconciliation. Anything still open is listed under “Not in your records” and “Not cleared yet” on the results page."
-              : `You went through ${total === 1 ? "the 1 pair" : `all ${total} pairs`} we weren't sure about. Everything's been sorted into your results.`}
+              ? "There were no uncertain pairs in this reconciliation. Anything still open is listed under “Not in your records” and “In your records only” on the results page."
+              : `You went through ${total === 1 ? "the 1 pair" : `all ${total} pairs`} we weren't sure about. Everything's been sorted into your results. Changed your mind about one? Your decisions are listed under “Needs review” on the results page, each with an Undo.`}
           </p>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 26 }}>
             <Button variant="primary" icon="arrowLeft" onClick={onBack}>
@@ -941,20 +961,23 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
       </div>
 
       <div style={{ position: "relative" }}>
-        {queue.slice(1, 4).map((_, i) => (
+        {/* Cards waiting behind the one on screen (the queue no longer holds a decided card). */}
+        {queue.slice(leaving ? 0 : 1, (leaving ? 0 : 1) + 3).map((_, i) => (
           <GhostCard key={i} depth={i + 1} />
         ))}
         <div style={{ position: "relative", zIndex: 2 }}>
-          {"matchType" in current && current.matchType === "composite" ? (
+          {"matchType" in shown && shown.matchType === "composite" ? (
             <CompositeReviewCard
-              item={current}
-              exiting={exiting}
+              key={shown.id}
+              item={shown}
+              exiting={leaving?.decision ?? null}
               onDecide={handleDecide}
             />
           ) : (
             <ReviewCard
-              item={current as ReviewItem}
-              exiting={exiting}
+              key={shown.id}
+              item={shown as ReviewItem}
+              exiting={leaving?.decision ?? null}
               onDecide={handleDecide}
             />
           )}
@@ -969,8 +992,8 @@ export function ReviewScreen({ queue, total, onDecide, onBack }: ReviewScreenPro
           marginTop: 16,
         }}
       >
-        {queue.length - 1 > 0
-          ? `${queue.length - 1} more after this`
+        {remainingAfterShown > 0
+          ? `${remainingAfterShown} more after this`
           : "Last one — almost there"}
       </p>
     </div>

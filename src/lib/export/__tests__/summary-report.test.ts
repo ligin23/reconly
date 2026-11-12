@@ -15,7 +15,7 @@ import { buildMonthReview } from "@/lib/review/months";
 import { verifyStatements } from "@/lib/review/statements";
 import type { SourceFileInfo } from "@/lib/data/repository";
 import type { ExportContext } from "@/lib/export/buckets";
-import { buildReportModel } from "@/lib/export/report-model";
+import { buildReportModel, dollars } from "@/lib/export/report-model";
 import { buildExcelWorkbook } from "@/lib/export/excel-worksheet";
 import { buildPdfDocument } from "@/lib/export/pdf-report";
 
@@ -161,7 +161,14 @@ describe("executive summary (shared model)", () => {
   it("reports the financial status and the duplicate-review status separately", () => {
     expect(row("Financial reconciliation")).toBe("Not reconciled — a difference or open items remain");
     expect(row("Duplicate review")).toBe("Complete — every possible duplicate was set aside or confirmed as separate");
-    expect(row("Unexplained difference")).toBe("$4.00");
+    // Signed bank-minus-ledger net activity, with both sides shown.
+    const ctx0 = scenario();
+    const net = (ts: { amount: number }[]) => ts.reduce((a, t) => a + t.amount, 0);
+    expect(row("Bank net activity")).toBe(dollars(net(ctx0.bankTxns)));
+    expect(row("Ledger net activity")).toBe(dollars(net(ctx0.ledgerTxns)));
+    expect(net(ctx0.bankTxns) - net(ctx0.ledgerTxns)).toBe(400);
+    expect(row("Net activity difference (bank minus ledger)")).toBe("$4.00");
+    expect(sum.executive.some(([l]) => /unexplained/i.test(l))).toBe(false);
   });
 
   it("gives unmatched, pending and match counts that agree with the month review", () => {
@@ -171,7 +178,7 @@ describe("executive summary (shared model)", () => {
   });
 
   it("summarises statement verification and coverage without overstating", () => {
-    expect(row("Statement verification")).toBe("Statement review needed — 1 verified · 1 mismatch (of 2 bank files)");
+    expect(row("Statement verification")).toBe("Statement review needed — 1 mismatch · 1 verified (of 2 bank files)");
     expect(row("Overall status")).toBe("Not reconciled");
     expect(row("Source coverage")).toMatch(/^Coverage not verified — \d+ notes? below$/);
     expect(JSON.stringify(sum.executive)).not.toMatch(/fully reconciled/i);
@@ -236,9 +243,13 @@ describe("verified facts / potential discrepancies / missing evidence / your dec
   });
   it("potential discrepancies", () => {
     const d = of("Potential discrepancies");
-    expect(d).toContain("The bank rows and records rows in use differ by $4.00.");
-    expect(d).toContain("1 bank transaction with no match in your records.");
-    expect(d).toContain("2 records entries with no match on the bank statement.");
+    expect(d.some((t) => t.startsWith("Bank net activity is $4.00 higher than ledger net activity."))).toBe(true);
+    expect(d.some((t) => /not account balances/.test(t) && /does not indicate its cause/.test(t))).toBe(true);
+    expect(d).toContain("1 bank transaction with no match in your records. The cause is not established.");
+    expect(d).toContain(
+      "2 records entries with no confirmed bank match. The cause is not established — they are not assumed to be timing differences."
+    );
+    expect(d.join(" ")).not.toMatch(/usually means|one missing entry|not yet cleared/i);
     expect(d.some((t) => t.startsWith('"bank-feb.csv" — Statement balance mismatch:'))).toBe(true);
   });
   it("missing or insufficient evidence", () => {
@@ -263,8 +274,8 @@ describe("unresolved exceptions", () => {
     const ex = buildReportModel(scenario(false)).summary!.exceptions;
     expect(ex.map((e) => e.type)).toEqual([
       "On bank statement, not in your records",
-      "In your records, not on bank statement",
-      "In your records, not on bank statement",
+      "In your records only — no confirmed bank match",
+      "In your records only — no confirmed bank match",
       "Suggested match awaiting review",
       "Suggested grouped match awaiting review",
       "Possible duplicate still included",
@@ -314,25 +325,27 @@ describe("Excel workbook", () => {
     const { text, lines } = (await sheets(scenario())).read("Financial Summary");
     expect(text).toContain("Overall results");
     expect(text).toContain("Bank rows | 6 imported · 5 in use · 1 set aside");
-    expect(text).toContain("Statement verification | Statement review needed — 1 verified · 1 mismatch");
+    expect(text).toContain("Statement verification | Statement review needed — 1 mismatch · 1 verified");
     expect(text).toContain("Month-by-month findings");
     const feb = lines.find((l) => l[0] === "February 2026")!;
     expect(feb.slice(1, 8)).toEqual(["3", "0", "0", "1", "0", "0", "2"]);
     expect(feb[9]).toBe("Statement balance mismatch");
-    const stmt = lines.find((l) => l[0] === "bank-feb.csv" && l[6] === "Statement balance mismatch")!;
-    expect(stmt[5]).toBe("($6,866.10)");
+    const stmt = lines.find((l) => l[0] === "bank-feb.csv" && l[9] === "Statement balance mismatch")!;
+    expect(stmt[8]).toBe("-6866.1"); // the difference, as a number
     expect(text).toContain("Unresolved exceptions  (4)");
     expect(text).toContain("Source coverage limitations — Coverage not verified");
     expect(text).toContain("Verified facts | 2 transactions matched exactly");
     expect(text).toContain("Your decisions | 2 suggested matches confirmed by you.");
   });
 
-  it("formula injection: every cell on BOTH sheets is a string, including a formula-looking payee", async () => {
+  it("formula injection: on BOTH sheets nothing is a formula, text is text, and a formula-looking payee stays text", async () => {
     const s = await sheets(scenario());
     for (const name of s.names) {
       const { cells } = s.read(name);
       expect(cells.length).toBeGreaterThan(40);
-      expect(cells.every((c) => c.t === "s" && c.f === undefined)).toBe(true);
+      expect(cells.every((c) => c.f === undefined)).toBe(true);
+      // Strings, or numbers Reconly computed (amounts / counts) — nothing else.
+      expect(cells.every((c) => c.t === "s" || (c.t === "n" && typeof (c.v as unknown) === "number"))).toBe(true);
     }
     const evil = s.read("Financial Summary").cells.filter((c) => String(c.v).startsWith("=HYPERLINK"));
     expect(evil.length).toBeGreaterThan(0); // it IS in the exceptions list…

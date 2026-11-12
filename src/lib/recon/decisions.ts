@@ -131,3 +131,64 @@ export function reviewProgress(
     composites.filter((c) => c.status === "suggested").length;
   return { total, decided: total - pending, pending };
 }
+
+/**
+ * Take back a yes/no on a one-to-one suggestion: it returns to the review
+ * queue as "suggested". Exact matches were never the user's decision (the
+ * engine confirmed them), so they are left alone.
+ */
+export function undoMatchDecision(matches: Match[], matchId: string): Match[] {
+  return matches.map((m) =>
+    m.id === matchId && m.type !== "exact" && m.status !== "suggested" ? { ...m, status: "suggested" } : m
+  );
+}
+
+/**
+ * Take back a decision on a grouped (composite) suggestion. The engine's
+ * ORIGINAL suggestion is put back — passed in as `fresh`, from a re-run of
+ * the unchanged engine over the same rows — because accepting an ambiguous
+ * group discards the options that were not picked, and the user must be
+ * able to choose again. If the engine no longer offers that group, the
+ * current one is simply returned to "suggested".
+ */
+export function undoCompositeDecision(
+  composites: AnyCompositeMatch[],
+  compositeId: string,
+  fresh: AnyCompositeMatch[]
+): AnyCompositeMatch[] {
+  return composites.map((c): AnyCompositeMatch => {
+    if (c.id !== compositeId || c.status === "suggested") return c;
+    const original = fresh.find((f) => f.id === compositeId);
+    return original ? original : ({ ...c, status: "suggested" } as AnyCompositeMatch);
+  });
+}
+
+/**
+ * Record a review decision exactly once. The review screen commits a
+ * decision the moment the user clicks; a second click (double-click, a
+ * click during the card's exit animation, a stale handler) must not
+ * overwrite it — e.g. turn an accept into a reject. Only a pairing that is
+ * still "suggested" can be decided; anything else is returned unchanged.
+ * Changing a decision goes through Undo, never through a second click.
+ */
+export function decideMatchOnce(
+  matches: Match[],
+  matchId: string,
+  decision: UserDecision
+): Match[] {
+  const m = matches.find((x) => x.id === matchId);
+  if (!m || m.type === "exact" || m.status !== "suggested") return matches;
+  return applyMatchDecision(matches, matchId, decision);
+}
+
+/** Composite counterpart of {@link decideMatchOnce}. */
+export function decideCompositeOnce(
+  composites: AnyCompositeMatch[],
+  compositeId: string,
+  decision: UserDecision,
+  pickedCombination?: string[]
+): AnyCompositeMatch[] {
+  const c = composites.find((x) => x.id === compositeId);
+  if (!c || c.status !== "suggested") return composites;
+  return applyCompositeDecision(composites, compositeId, decision, pickedCombination);
+}

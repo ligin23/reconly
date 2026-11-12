@@ -11,10 +11,12 @@
 // ============================================================
 
 import { formatPeriod } from "@/lib/data/utils";
+import { NET_LABELS } from "@/lib/review/net-difference";
 import { exportFileName, localIsoDate, type ExportContext } from "./buckets";
 import {
   buildReportModel,
   dollars,
+  netRows,
   shortDate,
   type DuplicateLine,
   type ReportSummary,
@@ -162,8 +164,8 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
     ["Matched transactions", String(model.matchedCount)],
     ["On bank statement, not yet in your records", String(missingFromBooks.length)],
     ["Added to your reconciliation (to be recorded in your books)", String(added.length)],
-    ["In records, not yet cleared by bank", String(missingFromBank.length)],
-    ["Marked as outstanding — known timing difference", String(acknowledged.length)],
+    ["In your records only — no confirmed bank match", String(missingFromBank.length)],
+    ["Marked by you as expected to clear later", String(acknowledged.length)],
     ["Possible matches (not confirmed)", String(model.reviewCount)],
   ];
   if (ctx.openingBalance !== null) {
@@ -172,10 +174,9 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
   if (ctx.closingBalance !== null) {
     summaryRows.push(["Closing balance (bank)", dollars(ctx.closingBalance)]);
   }
-  summaryRows.push([
-    "Unexplained difference",
-    ctx.reconciled ? "$0.00" : dollars(Math.abs(ctx.unexplainedDifference)),
-  ]);
+  // Signed net activity (bank minus ledger) — transaction totals, not
+  // account balances, and never an absolute value without its direction.
+  summaryRows.push(...netRows(model.net));
 
   const keyValueTable = (rows: string[][], highlightLast: boolean, labelShare = 0.65) => {
     autoTable(doc, {
@@ -214,6 +215,19 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
   }
   plainHeading("Summary");
   keyValueTable(summaryRows, true);
+  {
+    // What the net figures are — and are not.
+    y -= 20;
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(...C.ink3);
+    const scopeLines = doc.splitTextToSize(
+      `${NET_LABELS.scope} Amounts in parentheses are negative; a negative difference means bank net activity is the lower figure. The size of a difference does not indicate its cause.`,
+      CW - 20
+    );
+    doc.text(scopeLines, ML + 10, y);
+    y += scopeLines.length * 13 + 18;
+  }
 
   // ==================================================================
   // HELPER: section heading
@@ -477,25 +491,31 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
   }
 
   // ==================================================================
-  // SECTION: IN RECORDS BUT NOT YET CLEARED (unacknowledged)
+  // SECTION: IN RECORDS ONLY (no confirmed bank match; cause not established)
   // ==================================================================
   sectionHeading(
-    "In your records but not yet cleared by your bank",
+    "In your records only — no confirmed bank match",
     plural(missingFromBank.length, "item")
   );
-  txnTable(missingFromBank, "None — every entry in your records has cleared the bank.");
+  if (missingFromBank.length > 0) {
+    inlineNote(
+      "These entries have no confirmed bank match. The cause is not established: an entry may be waiting to clear, " +
+      "may have been entered with a different amount, or may not belong. They are not assumed to be timing differences."
+    );
+  }
+  txnTable(missingFromBank, "None — every entry in your records has a confirmed bank match or was marked by you as expected.");
 
   // ==================================================================
   // SECTION: MARKED AS OUTSTANDING (acknowledged — timing only)
   // ==================================================================
   if (acknowledged.length > 0) {
     sectionHeading(
-      "Marked as outstanding — known timing difference",
+      "Marked by you as expected to clear later",
       plural(acknowledged.length, "item")
     );
     inlineNote(
-      "These are in your records but your bank hasn't processed them yet. " +
-      "This is a normal timing difference — no action needed."
+      "You marked these records entries as expected to clear the bank later. " +
+      "This is your classification; Reconly has not verified it, and they remain unmatched."
     );
     txnTable(acknowledged, "", C.noteBg);
   }
@@ -572,13 +592,21 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
     ensureSpace(Math.min(lines.length, 4) * 34 + 30);
     autoTable(doc, {
       startY: y,
-      head: [["Side", "Date", "Description", "Amount", "Why it is listed"]],
+      head: [["Side", "Date", "Description", "Amount", "Detection, decision and current status"]],
       body: lines.map((l) => [
         l.side,
         l.date,
         withSource(l.description, l.source),
         l.amount,
-        `${l.status}. ${l.reason}`,
+        [
+          `${l.status}.`,
+          `Why it was flagged: ${l.detection}`,
+          l.automatic ? `Automatic step: ${l.automatic}` : "",
+          l.decision ? `Your decision: ${l.decision}` : "",
+          `Current status: ${l.currentStatus}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
       ]),
       margin: { left: ML, right: 48 },
       tableWidth: CW,
@@ -627,7 +655,7 @@ export async function buildPdfDocument(ctx: PdfExportContext) {
     );
     inlineNote(
       "These rows ARE counted in this reconciliation. They look like they may be the same row imported twice, " +
-      "but the files do not prove it, so nothing was set aside."
+      "but the files do not prove it, so no row was set aside automatically. They still need a decision."
     );
     duplicateTable(model.possibleDuplicateLines);
   }

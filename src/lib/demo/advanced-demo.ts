@@ -61,6 +61,8 @@ export type DemoTourStep = {
     | { kind: "section"; testId: string }
     /** A Results-screen tab to switch to, then scroll into view. */
     | { kind: "tab"; testId: string }
+    /** Open the statement balance results (the month that needs attention) and focus them. */
+    | { kind: "statements" }
     | { kind: "review" }
     | { kind: "export" };
   action: string;
@@ -85,7 +87,7 @@ export const ADVANCED_DEMO_TOUR: readonly DemoTourStep[] = [
     id: "statements",
     title: "Statement Verification",
     text: "One month checks out, one doesn't add up, one can't be fully checked.",
-    target: { kind: "section", testId: "status-statements" },
+    target: { kind: "statements" },
     action: "Show statements",
   },
   {

@@ -6,8 +6,10 @@ import { inspectCsv } from "@/lib/parser";
 import { reconcile } from "@/lib/recon";
 import { buildDashboardData, unexplainedCents } from "@/lib/recon/adapter";
 import {
-  applyCompositeDecision,
-  applyMatchDecision,
+  decideCompositeOnce,
+  decideMatchOnce,
+  undoCompositeDecision,
+  undoMatchDecision,
   restoreComposites,
   restoreMatches,
   reviewProgress,
@@ -33,6 +35,7 @@ import {
   type MappingFile,
 } from "@/components/screens/mapping-screen";
 import { combineFiles, type CombinedImport, type ImportedFile } from "@/lib/import/combine";
+import { checkFileStructure } from "@/lib/import/validate-file";
 import {
   EMPTY_DUPLICATE_STATE,
   activeTxns,
@@ -48,6 +51,9 @@ import {
 } from "@/lib/import/duplicates";
 import { deriveVerdict } from "@/lib/recon/verdict";
 import { buildMonthReview } from "@/lib/review/months";
+import { possibleAmountDifferences } from "@/lib/review/amount-hints";
+import { signedDollars } from "@/lib/review/net-difference";
+import { sourceLabel } from "@/lib/import/provenance";
 import { verifyStatements } from "@/lib/review/statements";
 import { ProcessingScreen, type ReconCounts } from "@/components/screens/processing-screen";
 import { DashboardScreen } from "@/components/screens/dashboard-screen";
@@ -854,6 +860,45 @@ export function AppShell() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [menuOpen]);
+
+  // Browser Back on the Review screen returns to Results instead of leaving
+  // the app (which would discard the whole in-memory reconciliation).
+  // Entering Review pushes one history entry (same URL); the browser's Back
+  // pops it and we switch to Results. Leaving Review any other way pops our
+  // entry ourselves so the history stack never fills with dead entries.
+  // Review decisions are already committed on click, so leaving mid-animation
+  // by either route keeps them.
+  const screenRef = useRef(screen);
+  const selfBackRef = useRef(false);
+  useEffect(() => {
+    screenRef.current = screen;
+    const onReviewEntry = () => window.history.state?.reconlyReview === true;
+    if (screen === "review") {
+      if (!onReviewEntry()) {
+        window.history.pushState({ ...(window.history.state ?? {}), reconlyReview: true }, "");
+      }
+    } else if (onReviewEntry()) {
+      selfBackRef.current = true;
+      window.history.back();
+    }
+  }, [screen]);
+  useEffect(() => {
+    const onPop = () => {
+      const onReviewEntry = window.history.state?.reconlyReview === true;
+      if (selfBackRef.current) {
+        // Our own back() after leaving Review in-app. If the user re-entered
+        // Review before it landed, put the entry back.
+        selfBackRef.current = false;
+        if (screenRef.current === "review" && !onReviewEntry) {
+          window.history.pushState({ ...(window.history.state ?? {}), reconlyReview: true }, "");
+        }
+        return;
+      }
+      if (screenRef.current === "review" && !onReviewEntry) setScreen("dashboard");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const [analyzed, setAnalyzed] = useState(false);
   // Several files per side are allowed (e.g. one bank export per month).
   const [files, setFiles] = useState<UploadFiles>({ bank: [], ledger: [] });
@@ -961,6 +1006,31 @@ export function AppShell() {
       new Set(acknowledgedBankIds)
     );
   }, [matches, compositeMatches, userAddedEntries, acknowledgedBankIds, engineOutput]);
+
+  // "Possible amount difference" notes for unmatched rows — informational
+  // only: nothing is matched, set aside or re-totalled because of them.
+  const amountHints = useMemo(() => {
+    if (!engineOutput || !dashboardData) return undefined;
+    const bankById = new Map(engineOutput.bankTxns.map((t) => [t.id, t]));
+    const ledgerById = new Map(engineOutput.ledgerTxns.map((t) => [t.id, t]));
+    const pick = (list: MissingTxn[], byId: Map<string, Txn>) =>
+      list.map((m) => byId.get(m.txnId)).filter((t): t is Txn => Boolean(t));
+    const hints = possibleAmountDifferences(
+      pick(dashboardData.missingFromBooks, bankById),
+      pick(dashboardData.missingFromBank, ledgerById)
+    );
+    const out: Record<string, string> = {};
+    for (const h of hints) {
+      const bank = bankById.get(h.bankTxnId)!;
+      const ledger = ledgerById.get(h.ledgerTxnId)!;
+      const gap = signedDollars(Math.abs(h.difference));
+      const from = (t: Txn) => (sourceLabel(t) ? ` (${sourceLabel(t)})` : "");
+      const tail = "Not matched automatically; totals are unchanged.";
+      out[bank.id] = `Possible amount difference: your records have the same description on the same date for ${signedDollars(ledger.amount)}${from(ledger)} — ${gap} apart. ${tail}`;
+      out[ledger.id] = `Possible amount difference: the bank shows the same description on the same date for ${signedDollars(bank.amount)}${from(bank)} — ${gap} apart. ${tail}`;
+    }
+    return out;
+  }, [engineOutput, dashboardData]);
 
   // Duplicate review — recomputed from the imported rows (deterministic),
   // never from bank-vs-ledger: each side is checked on its own.
@@ -1177,6 +1247,18 @@ export function AppShell() {
       // Real files replace the sample pair rather than joining it.
       const existing = fileContentsRef.current[side].filter((f) => !f.sample);
       const sideLabel = side === "bank" ? "bank statement" : "ledger";
+
+      // A file that cannot hold a table of transactions (empty, plain text,
+      // column titles with nothing under them) is refused here, with the
+      // reason — not passed on to a column-mapping screen that cannot fix
+      // it. Files already added are untouched; the user just picks another.
+      const problem = checkFileStructure(content);
+      if (problem) {
+        setUploadError(
+          `"${file.name}" wasn't added — ${problem.message} Choose a different file for the ${sideLabel} side.`
+        );
+        return;
+      }
 
       if (existing.length >= MAX_FILES_PER_SIDE) {
         setUploadError(
@@ -1549,6 +1631,11 @@ export function AppShell() {
   // `itemId` is the item the user was looking at when they clicked; the
   // review card animates out before this fires, so acting on "whatever is
   // first in the queue now" could apply the decision to a different item.
+  // The Review screen calls this synchronously on click — before any exit
+  // animation — so the decision is in authoritative state even if the user
+  // navigates away (Results, browser Back) a moment later. The *Once
+  // helpers ignore an item that is no longer pending, so a double-click or
+  // a stale handler can never record a second, different decision.
   const decide = (decision: ReviewDecision, meta?: ReviewMeta, itemId?: string) => {
     const currentReviewItems = dashboardData?.reviewItems ?? [];
     const current = itemId
@@ -1557,11 +1644,42 @@ export function AppShell() {
     if (!current) return;
     if ("matchType" in current && current.matchType === "composite") {
       setCompositeMatches((cs) =>
-        applyCompositeDecision(cs, current.id, decision, meta?.pickedCombination)
+        decideCompositeOnce(cs, current.id, decision, meta?.pickedCombination)
       );
       return;
     }
-    setMatches((ms) => applyMatchDecision(ms, current.id, decision));
+    setMatches((ms) => decideMatchOnce(ms, current.id, decision));
+  };
+
+  /**
+   * Take back a review decision: the suggestion returns to the review
+   * queue. Nothing is re-matched differently — for a grouped match the
+   * unchanged engine is re-run over the same rows only to recover the
+   * original suggestion (including options that were not picked).
+   */
+  const undoDecision = (id: string) => {
+    if (!engineOutput) return;
+    const bankIds = new Set<string>();
+    const ledgerIds = new Set<string>();
+    const composite = compositeMatches.find((c) => c.id === id);
+    if (composite) {
+      const fresh = reconcile(engineOutput.bankTxns, engineOutput.ledgerTxns).compositeMatches;
+      const next = undoCompositeDecision(compositeMatches, id, fresh);
+      const restored = next.find((c) => c.id === id);
+      bankIds.add(composite.bankTxnId);
+      for (const l of [...composite.ledgerTxnIds, ...(restored?.ledgerTxnIds ?? [])]) ledgerIds.add(l);
+      setCompositeMatches(next);
+    } else {
+      const match = matches.find((m) => m.id === id);
+      if (!match) return;
+      bankIds.add(match.bankTxnId);
+      ledgerIds.add(match.ledgerTxnId);
+      setMatches((ms) => undoMatchDecision(ms, id));
+    }
+    // A row that is back in a pending suggestion cannot also be "added to
+    // the reconciliation" or "marked as expected" — that would count it twice.
+    setUserAddedEntries((prev) => prev.filter((e) => !bankIds.has(e.txnId)));
+    setAcknowledgedBankIds((prev) => prev.filter((x) => !ledgerIds.has(x)));
   };
 
   // ---- Missing-item resolution handlers ----------------------------
@@ -2053,6 +2171,9 @@ export function AppShell() {
                 onRemoveAdded={handleRemoveAdded}
                 onAcknowledgeMissingBank={handleAcknowledgeBank}
                 onUnacknowledgeMissingBank={handleUnacknowledgeBank}
+                amountHints={amountHints}
+                decided={dashboardData.decided}
+                onUndoDecision={undoDecision}
                 duplicates={
                   imported
                     ? {

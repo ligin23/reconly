@@ -264,7 +264,7 @@ describe("missing statement balances, with no evidence of an error", () => {
     expect(x.saved).toBe("reconciled");
     const model = buildReportModel(x.ctx);
     expect(model.verdict).toBe("Your records match your bank for this period. Statement balances: Not verified.");
-    expect(Object.fromEntries(model.summary!.executive)["Statement verification"]).toBe("Not verified — 1 not verified (of 1 bank file)");
+    expect(Object.fromEntries(model.summary!.executive)["Statement verification"]).toBe("Not verified — 1 file could not be verified (of 1 bank file)");
     expect(x.copilot.summary.status).toMatchObject({ overall: "reconciled", statement: "not-verified", statementFilesNeedingReview: 0 });
     expect(await excelText(x.ctx)).toContain("Statement balances: Not verified.");
   });
@@ -282,7 +282,7 @@ describe("amount-owed sign convention", () => {
     expect(x.statements.statements[0].convention).toBe("unknown");
     expect(x.verdict.status).toBe("transactions-match-statement-review");
     expect(Object.fromEntries(buildReportModel(x.ctx).summary!.executive)["Statement verification"]).toBe(
-      "Statement review needed — 1 sign convention needs review (of 1 bank file)"
+      "Statement review needed — 1 file with an unclear sign convention (of 1 bank file)"
     );
   });
 

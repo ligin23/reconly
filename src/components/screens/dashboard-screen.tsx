@@ -11,7 +11,7 @@ import {
 } from "@/lib/sample-data";
 import { type BalanceProof } from "@/lib/recon/types";
 import { VERDICT_LABEL, type Verdict } from "@/lib/recon/verdict";
-import { formatBreakdownAmount } from "@/lib/recon/adapter";
+import { formatBreakdownAmount, type DecidedItem } from "@/lib/recon/adapter";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -24,6 +24,15 @@ import { DuplicatesPanel, type DuplicatesPanelProps } from "@/components/duplica
 import { MonthReviewPanel, SourceChecksCard } from "@/components/month-review-panel";
 import type { MonthReview } from "@/lib/review/months";
 import { STATEMENT_SUMMARY_LABEL, type StatementReview } from "@/lib/review/statements";
+import { statementOutcomeText } from "@/lib/review/statement-summary";
+import {
+  NET_LABELS,
+  netDifference,
+  netDifferenceBreakdown,
+  netDifferenceSentence,
+  signedDollars,
+  type NetDifference,
+} from "@/lib/review/net-difference";
 
 // ---- Breakdown (right side of status hero) --------------------------
 
@@ -31,10 +40,13 @@ function Breakdown({
   reconciled,
   balanceProof,
   unexplained,
+  net,
 }: {
   reconciled: boolean;
   balanceProof?: BalanceProof;
   unexplained: number;
+  /** Signed figures and what contributes; absent on non-engine renders. */
+  net?: NetDifference;
 }) {
   const Row = ({
     label,
@@ -52,6 +64,7 @@ function Breakdown({
         display: "flex",
         alignItems: "baseline",
         justifyContent: "space-between",
+        gap: 12,
         padding: "9px 0",
       }}
     >
@@ -60,7 +73,6 @@ function Breakdown({
           fontSize: 13.5,
           color: strong ? "var(--ink)" : "var(--ink-2)",
           fontWeight: strong ? 600 : 500,
-          whiteSpace: "nowrap",
         }}
       >
         {label}
@@ -68,6 +80,7 @@ function Breakdown({
       <span
         className="tnum"
         style={{
+          whiteSpace: "nowrap",
           fontSize: strong ? 15 : 14,
           fontWeight: strong ? 700 : 500,
           color:
@@ -105,16 +118,32 @@ function Breakdown({
         justifyContent: "center",
       }}
     >
-      <Row label="Your bank says" value={bankDisplay} />
+      <Row label={NET_LABELS.bank} value={bankDisplay} />
       <div style={{ height: 1, background: "var(--line-2)" }} />
-      <Row label="Your books say" value={booksDisplay} />
+      <Row label={NET_LABELS.ledger} value={booksDisplay} />
+      {net && net.addedNet !== 0 && (
+        <>
+          <div style={{ height: 1, background: "var(--line-2)" }} />
+          <Row label="Bank items you added to the reconciliation" value={signedDollars(net.addedNet)} />
+        </>
+      )}
       <div style={{ height: 1, background: "var(--line)" }} />
-      <Row
-        label={reconciled ? "Difference" : "Still unexplained"}
-        value={reconciled ? "$0.00" : money(unexplained)}
-        strong
-        tone={reconciled ? "good" : "warn"}
-      />
+      <div data-testid="net-difference-row">
+        <Row
+          label={NET_LABELS.difference}
+          value={
+            reconciled
+              ? "$0.00"
+              : // Signed: negative means the bank total is the lower one.
+                signedDollars(net ? net.difference : balanceProof?.unexplainedDifference ?? unexplained)
+          }
+          strong
+          tone={reconciled ? "good" : "warn"}
+        />
+      </div>
+      <div data-testid="net-scope-note" style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.4, marginTop: 4 }}>
+        {NET_LABELS.scope}
+      </div>
     </div>
   );
 }
@@ -128,10 +157,12 @@ function StatusHero({
   onReview,
   reviewLeft = 0,
   verdict,
+  net,
 }: {
   reconciled: boolean;
   unexplained: number;
   balanceProof?: BalanceProof;
+  net?: NetDifference;
   onReview: () => void;
   /** Suggested pairs still awaiting a yes/no — blocks "Fully reconciled". */
   reviewLeft?: number;
@@ -225,7 +256,7 @@ function StatusHero({
           </Button>
         </div>
         {/* The financial side is clean — show it that way. */}
-        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} />
+        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} net={net} />
       </div>
     );
   }
@@ -309,7 +340,7 @@ function StatusHero({
             </div>
           </div>
         </div>
-        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} />
+        <Breakdown reconciled balanceProof={balanceProof} unexplained={0} net={net} />
       </div>
     );
   }
@@ -370,15 +401,29 @@ function StatusHero({
               ) : (
                 <>
                   {money(unexplained)}{" "}
-                  <span style={{ color: "var(--warn-ink)" }}>unexplained</span>
+                  <span style={{ color: "var(--warn-ink)" }}>net difference</span>
                 </>
               )}
             </div>
             <div style={{ fontSize: 14.5, color: "var(--ink-2)", marginTop: 5 }}>
               {unexplained === 0 && reviewLeft > 0
                 ? `The totals line up — ${reviewLeft} suggested ${reviewLeft === 1 ? "pair needs" : "pairs need"} your confirmation.`
-                : "A gap this size usually means one missing entry."}
+                : unexplained === 0
+                ? "The net totals are equal, but items are still unmatched — equal totals alone do not mean the period is reconciled."
+                : net
+                ? netDifferenceSentence(net)
+                : "Bank net activity and ledger net activity are different."}
             </div>
+            {net && netDifferenceBreakdown(net).length > 0 && (
+              <ul
+                data-testid="net-breakdown"
+                style={{ margin: "8px 0 0", padding: 0, listStyle: "none", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.5 }}
+              >
+                {netDifferenceBreakdown(net).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
         <Button variant="primary" size="sm" iconRight="arrowRight" onClick={onReview}>
@@ -389,7 +434,74 @@ function StatusHero({
         reconciled={false}
         unexplained={unexplained}
         balanceProof={balanceProof}
+        net={net}
       />
+    </div>
+  );
+}
+
+// ---- Review decisions already made (find them again; take one back) --
+
+function DecidedList({ items, onUndo }: { items: DecidedItem[]; onUndo?: (id: string) => void }) {
+  const accepted = items.filter((i) => i.decision === "accepted").length;
+  const rejected = items.length - accepted;
+  return (
+    <div data-testid="decided-list" style={{ borderBottom: "1px solid var(--line)", background: "var(--surface-2)" }}>
+      <div style={{ padding: "12px 18px 8px", fontSize: 13, color: "var(--ink-2)" }}>
+        <span style={{ fontWeight: 600, color: "var(--ink)" }}>Your review decisions ({items.length})</span>
+        {" "}· {accepted} confirmed · {rejected} rejected. Changed your mind? Undo puts a pair back in the review
+        queue.
+      </div>
+      {items.map((d) => (
+        <div
+          key={d.id}
+          data-testid="decided-item"
+          data-decision={d.decision}
+          data-kind={d.kind}
+          className="m-wrap"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "10px 18px",
+            borderTop: "1px solid var(--line-2)",
+          }}
+        >
+          <span style={{ flex: "1 1 260px", minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 13.5, fontWeight: 500, color: "var(--ink)" }}>
+              {d.bankDate} · {d.bankDesc} · {money(d.amount)}
+            </span>
+            <span style={{ display: "block", fontSize: 12, color: "var(--ink-3)", wordBreak: "break-word" }}>
+              {d.decision === "accepted" ? "Matched with" : "Not matched with"} {d.kind === "group" ? d.booksDesc : `${d.booksDate} · ${d.booksDesc}`}
+              {d.kind === "group" ? " (grouped match)" : ""}
+              {d.crossMonth ? " · crosses a month boundary" : ""}
+            </span>
+          </span>
+          <span
+            className="pill"
+            style={{
+              flex: "none",
+              fontSize: 11.5,
+              fontWeight: 600,
+              padding: "2px 9px",
+              borderRadius: 999,
+              background: d.decision === "accepted" ? "var(--good-soft)" : "var(--warn-soft)",
+              color: d.decision === "accepted" ? "var(--good-ink)" : "var(--warn-ink)",
+            }}
+          >
+            {d.decision === "accepted" ? "Confirmed by you" : "Rejected by you"}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="undo-decision"
+            title={`Put ${d.bankDesc} (${d.bankDate}) back in the review queue`}
+            onClick={onUndo ? () => onUndo(d.id) : undefined}
+          >
+            Undo
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -458,7 +570,13 @@ function TxnLists({
   onRemoveAdded,
   onAcknowledgeMissingBank,
   onUnacknowledgeMissingBank,
+  amountHints,
+  decided = [],
+  onUndoDecision,
 }: {
+  decided?: DecidedItem[];
+  onUndoDecision?: (id: string) => void;
+  amountHints?: Record<string, string>;
   counts: Counts;
   missingBooks: MissingTxn[];
   addedToReconciliation: MissingTxn[];
@@ -480,7 +598,7 @@ function TxnLists({
     { key: "matched", label: "Matched", count: counts.matched },
     { key: "review", label: "Needs review", count: counts.review },
     { key: "missingBooks", label: "Not in your records", count: counts.missingFromBooks },
-    { key: "missingBank", label: "Not cleared yet", count: counts.missingFromBank },
+    { key: "missingBank", label: "In your records only", count: counts.missingFromBank },
   ] as const;
 
   return (
@@ -501,7 +619,9 @@ function TxnLists({
             key={t.key}
             className="tab"
             data-active={tab === t.key ? "" : undefined}
-            data-testid={t.key === "missingBooks" ? "tab-missing-books" : undefined}
+            data-testid={
+              t.key === "missingBooks" ? "tab-missing-books" : t.key === "missingBank" ? "tab-missing-bank" : undefined
+            }
             onClick={() => setTab(t.key)}
           >
             {t.label}
@@ -540,12 +660,20 @@ function TxnLists({
           </div>
         ))}
 
+      {tab === "review" && decided.length > 0 && (
+        <DecidedList items={decided} onUndo={onUndoDecision} />
+      )}
+
       {tab === "review" &&
         (reviewItems.length === 0 ? (
           <EmptyState
             icon="checkCircle"
             title="All caught up"
-            body="You've reviewed every pair we weren't sure about. Nice work."
+            body={
+              decided.length > 0
+                ? "You've answered every pair we weren't sure about. Your decisions are listed above — undo any of them to decide again."
+                : "You've reviewed every pair we weren't sure about. Nice work."
+            }
           />
         ) : (
           <div>
@@ -604,6 +732,7 @@ function TxnLists({
                   key={tx.txnId}
                   tx={tx}
                   hint={tx.hint}
+                  flag={amountHints?.[tx.txnId]}
                   actionLabel="Add to my reconciliation"
                   actionIcon="plus"
                   onAction={onAddToBooks ? () => onAddToBooks(tx) : undefined}
@@ -630,9 +759,9 @@ function TxnLists({
 
       {tab === "missingBank" && (
         <div>
-          <ListNote text="These are in your records but haven't cleared your bank yet — this is normal and usually just a matter of timing." />
+          <ListNote text="These entries have no confirmed bank match. Review them to determine why — for example a payment the bank hasn't processed yet, an amount entered differently, or an entry that doesn't belong. If you know an entry is simply waiting to clear, you can mark it as expected." />
           {missingBank.length === 0 && acknowledgedBank.length === 0 ? (
-            <EmptyState icon="checkCircle" title="Nothing here" body="Everything in your records has cleared the bank." />
+            <EmptyState icon="checkCircle" title="Nothing here" body="Every entry in your records has a confirmed bank match." />
           ) : (
             <>
               {missingBank.map((tx) => (
@@ -640,6 +769,7 @@ function TxnLists({
                   key={tx.txnId}
                   tx={tx}
                   hint={tx.hint}
+                  flag={amountHints?.[tx.txnId]}
                   actionLabel="Mark as expected"
                   actionIcon="check"
                   onAction={onAcknowledgeMissingBank ? () => onAcknowledgeMissingBank(tx) : undefined}
@@ -653,7 +783,7 @@ function TxnLists({
                   actionLabel=""
                   resolvedNode={
                     <ResolvedChip
-                      label="Marked as expected"
+                      label="Marked by you as expected"
                       onRemove={() => onUnacknowledgeMissingBank?.(tx.txnId)}
                     />
                   }
@@ -694,6 +824,11 @@ export type DashboardScreenProps = {
   statementReview?: StatementReview;
   /** Duplicate review for this import; the panel hides itself when empty. */
   duplicates?: DuplicatesPanelProps;
+  /** txnId → "possible amount difference" note (informational only). */
+  amountHints?: Record<string, string>;
+  /** Suggestions the user has already answered, and how to take one back. */
+  decided?: DecidedItem[];
+  onUndoDecision?: (id: string) => void;
 };
 
 export function DashboardScreen({
@@ -717,8 +852,22 @@ export function DashboardScreen({
   monthReview,
   statementReview,
   duplicates,
+  amountHints,
+  decided,
+  onUndoDecision,
 }: DashboardScreenProps) {
   const reviewLeft = counts.review;
+  const signed = (t: { amount: number; type: "in" | "out" }) => ({ amount: t.type === "in" ? t.amount : -t.amount });
+  // What the difference is made of — arithmetic only, never a cause.
+  const net = balanceProof
+    ? netDifference({
+        bankNet: balanceProof.bankNetChange,
+        ledgerNet: balanceProof.ledgerNetChange,
+        added: addedToReconciliation.map(signed),
+        bankOnly: missingFromBooks.map(signed),
+        ledgerOnly: [...missingFromBank, ...acknowledgedBank].map(signed),
+      })
+    : undefined;
 
   // Dynamic insights derived from live counts/amounts
   const insights = reconciled
@@ -729,12 +878,12 @@ export function DashboardScreen({
       ]
     : [
         missingFromBank.length > 0
-          ? `${missingFromBank.length} ${missingFromBank.length === 1 ? "item hasn't" : "items haven't"} cleared your bank yet — that's normal, no action needed.`
-          : "No outstanding items waiting to clear.",
+          ? `${missingFromBank.length} ${missingFromBank.length === 1 ? "entry is" : "entries are"} in your records with no confirmed bank match. Review ${missingFromBank.length === 1 ? "it" : "them"} to determine why.`
+          : "Every entry in your records has a confirmed bank match or was marked by you as expected.",
         missingFromBooks.length > 0
           ? missingFromBooks.length === 1
-            ? `One item (${money(missingFromBooks[0].amount)}) is on your bank statement but not in your records yet. Adding it to your reconciliation would help close the gap.`
-            : `${missingFromBooks.length} items are on your bank statement but not in your records yet.`
+            ? `One item (${money(missingFromBooks[0].amount)}) is on your bank statement with no match in your records.`
+            : `${missingFromBooks.length} items are on your bank statement with no match in your records.`
           : "All bank transactions have matching entries in your records.",
         reviewLeft > 0
           ? `${reviewLeft} ${reviewLeft === 1 ? "pair looks" : "pairs look"} like a match but need a quick yes or no from you.`
@@ -759,6 +908,7 @@ export function DashboardScreen({
         onReview={onOpenReview}
         reviewLeft={reviewLeft}
         verdict={verdict}
+        net={net}
       />
 
       {/* Three separate answers, always shown side by side: do the
@@ -820,6 +970,14 @@ export function DashboardScreen({
                 ? "Some bank files could not be fully verified."
                 : "Stated opening and closing balances agree with each file's activity."}
             </div>
+            {/* Every outcome named on its own: a mismatch, a file that
+                could not be verified and a running-balance-only check are
+                different things. */}
+            {statementReview && statementReview.statements.length > 0 && (
+              <div data-testid="status-statements-outcomes" style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 4, fontWeight: 500 }}>
+                {statementOutcomeText(statementReview.counts)}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -845,10 +1003,10 @@ export function DashboardScreen({
           hint="On your bank, not in your records"
         />
         <KpiCard
-          label="Not cleared yet"
+          label="In your records only"
           value={counts.missingFromBank}
           kind="missing"
-          hint="In your books, not the bank"
+          hint="No confirmed bank match"
         />
       </div>
 
@@ -876,6 +1034,9 @@ export function DashboardScreen({
         onRemoveAdded={onRemoveAdded}
         onAcknowledgeMissingBank={onAcknowledgeMissingBank}
         onUnacknowledgeMissingBank={onUnacknowledgeMissingBank}
+        amountHints={amountHints}
+        decided={decided}
+        onUndoDecision={onUndoDecision}
       />
     </div>
   );

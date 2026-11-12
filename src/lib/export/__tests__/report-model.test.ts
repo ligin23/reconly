@@ -400,11 +400,14 @@ describe("Excel workbook (built for real)", () => {
     const { lines, text } = await sheetOf(ctxFor(s, accepted, { reconciled: true }));
     expect(text).toContain("Matched transactions  (2)");
     const group = lines.find((r) => r[1] === "STRIPE PAYOUT")!;
-    expect(group[4]).toBe("Grouped match — 2 entries in your records add up to this amount");
+    // The group total is text inside the description — never a number in an amount column.
+    expect(group[4]).toMatch(/^Grouped match — 2 entries in your records add up to this amount — group total \$100\.00 \(subtotal/);
+    expect(group[2]).toBe("100"); // the bank amount, once
+    expect(group[5]).toBe(""); // no books amount on the group row
     expect(group[6]).toBe("bank-mar.csv · row 2");
     const entry = lines.find((r) => r[4] === "Invoice 102 Birch")!;
     expect(entry[1].trim()).toBe("entry 2 of 2");
-    expect(entry[5]).toBe("$40.00");
+    expect(entry[5]).toBe("40"); // a real number: 40.00
     expect(entry[7]).toBe("ledger.csv · row 3");
     expect(lines.find((r) => r[0] === "Bank date")).toHaveLength(8); // + two source columns
   });
@@ -428,23 +431,36 @@ describe("Excel workbook (built for real)", () => {
     expect(text).toContain("Possible duplicates still included  (2)");
     const setAside = lines.find((r) => r[4] === "bank-q1.csv · row 2")!;
     expect(setAside[3]).toBe("Bank");
-    expect(setAside[5]).toMatch(/^Set aside automatically\. .*transaction ID \(TX1\)/);
+    expect(setAside[5]).toBe("Set aside automatically");
+    expect(setAside[6]).toMatch(/transaction ID \(TX1\)/); // detection evidence, in its own column
+    expect(setAside[7]).toMatch(/^Reconly set aside 1 copy automatically at import/);
+    expect(setAside[9]).toMatch(/^This row is excluded from the reconciliation totals/);
   });
 
-  it("every cell is an explicit string — a formula-looking description stays text", async () => {
+  it("text stays text and only Reconly's own amounts and counts are numbers — a formula-looking description is never a formula", async () => {
     const { cells } = await sheetOf(duplicateCtx());
     expect(cells.length).toBeGreaterThan(50);
-    expect(cells.every((c) => c.t === "s")).toBe(true);
+    // No cell anywhere is a formula.
+    expect(cells.every((c) => (c as unknown as { f?: string }).f === undefined)).toBe(true);
+    // Every cell is either an explicit string or a finite number with a money / count format.
+    for (const c of cells) {
+      if (c.t === "s") continue;
+      expect(c.t).toBe("n");
+      expect(typeof c.v).toBe("number");
+      expect(Number.isFinite(c.v as unknown as number)).toBe(true);
+      expect(["0", '"$"#,##0.00;("$"#,##0.00)']).toContain((c as unknown as { z?: string }).z);
+    }
+    expect(cells.some((c) => c.t === "n")).toBe(true);
     const evil = cells.find((c) => String(c.v).startsWith("=HYPERLINK"))!;
     expect(evil).toBeDefined();
     expect(evil.t).toBe("s");
     expect((evil as unknown as { f?: string }).f).toBeUndefined();
   });
 
-  it("legacy data: the sheet keeps its original six columns and has no duplicate sections", async () => {
+  it("legacy data: no source columns (six, plus the note beside the two amount columns) and no duplicate sections", async () => {
     const s = overlappingOptions();
     const { lines, text } = await sheetOf(ctxFor(s, s.result.compositeMatches));
-    expect(Math.max(...lines.map((r) => r.length))).toBe(6);
+    expect(Math.max(...lines.map((r) => r.length))).toBe(7);
     expect(text).not.toContain("Source");
     expect(text).not.toContain("set aside");
   });

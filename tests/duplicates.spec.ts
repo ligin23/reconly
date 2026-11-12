@@ -94,7 +94,7 @@ test("without proof nothing is set aside; the user decides, and can undo", async
 
   const group = panel.getByTestId("dup-section-check").getByTestId("dup-group");
   await expect(group).toHaveCount(1);
-  await expect(group.getByTestId("dup-evidence")).toContainText(/nothing was set aside/i);
+  await expect(group.getByTestId("dup-evidence")).toContainText(/no row was set aside automatically/i);
   await expect(group.getByTestId("dup-row-source")).toHaveText(["bank-jan-titled.csv · row 6", "bank-late-jan.csv · row 2"]);
 
   // The user says it is a repeat → the copy leaves the totals.

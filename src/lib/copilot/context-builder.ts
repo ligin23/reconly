@@ -246,7 +246,7 @@ export function buildReconContext(input: ReconContextInput): ReconContext {
     amount: formatMoney(t.amount),
     bucket: "missing-from-bank",
     reasons: [
-      "In your records, but the bank hasn't processed it yet — often just timing",
+      "In your records with no confirmed bank match — the cause is not established",
     ],
   }));
 

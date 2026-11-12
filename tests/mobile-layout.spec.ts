@@ -94,7 +94,7 @@ for (const width of [375, 390, 412]) {
       // Main content uses nearly the whole width.
       const hero = (await page.getByTestId("recon-status").boundingBox())!;
       expect(hero.width).toBeGreaterThan(width * 0.9);
-      await expect(page.getByTestId("recon-status")).toContainText("unexplained");
+      await expect(page.getByTestId("recon-status")).toContainText("net difference");
 
       // Top-bar actions are all reachable.
       await expectWithinViewport(page, "menu-btn");
@@ -102,7 +102,7 @@ for (const width of [375, 390, 412]) {
       await expectWithinViewport(page, "save-btn");
 
       // The four summary cards are present (two per row at this width).
-      for (const label of ["Matched", "Needs review", "Not in your records", "Not cleared yet"]) {
+      for (const label of ["Matched", "Needs review", "Not in your records", "In your records only"]) {
         await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
       }
       // The three status cards stack.
@@ -204,7 +204,7 @@ test.describe("desktop 1280px is unchanged", () => {
 
     // The four summary cards sit side by side.
     const tops: number[] = [];
-    for (const label of ["Matched", "Needs review", "Not in your records", "Not cleared yet"]) {
+    for (const label of ["Matched", "Needs review", "Not in your records", "In your records only"]) {
       const b = (await page.getByText(label, { exact: true }).first().boundingBox())!;
       tops.push(Math.round(b.y));
     }

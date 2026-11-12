@@ -11,12 +11,14 @@
 // ============================================================
 
 import { formatPeriod } from "@/lib/data/utils";
+import { NET_LABELS } from "@/lib/review/net-difference";
 import { attentionHeading, exportFileName, type ExportContext } from "./buckets";
 import {
   buildReportModel,
   dollars,
   type DuplicateLine,
   type PairLine,
+  type ReportNet,
   type SideLine,
 } from "./report-model";
 
@@ -168,18 +170,56 @@ const S = {
 
 // ---- Cell builder helpers -------------------------------------------
 
-type XlsxCell = { v: string | number; t: "s" | "n"; s?: CellStyle };
+type XlsxCell = { v: string | number; t: "s" | "n"; z?: string; s?: CellStyle };
 
+/**
+ * TEXT cell. Anything that came from an uploaded file (descriptions, file
+ * names, references) goes through here and is stored as an explicit string
+ * — that is what stops "=HYPERLINK(...)" becoming a formula.
+ */
 function cell(value: string, style?: CellStyle): XlsxCell {
   return { v: value, t: "s", ...(style ? { s: style } : {}) };
 }
 
-function numCell(value: string, style?: CellStyle): XlsxCell {
-  return { v: value, t: "s", ...(style ? { s: style } : {}) };
+/** Currency format: negatives in parentheses, e.g. ($59.99). */
+export const MONEY_FORMAT = '"$"#,##0.00;("$"#,##0.00)';
+export const COUNT_FORMAT = "0";
+
+/**
+ * MONEY cell: a real number (dollars, signed) with a currency format, so
+ * SUM, sorting and filters work. Built only from integer cents computed by
+ * Reconly — never from text read out of an uploaded file. `null` = no
+ * amount → an empty text cell.
+ */
+function moneyCell(cents: number | null, style?: CellStyle): XlsxCell {
+  if (cents === null) return blank(style);
+  return { v: cents / 100, t: "n", z: MONEY_FORMAT, s: { ...(style ?? {}), numFmt: MONEY_FORMAT } };
+}
+
+/** COUNT cell: a whole number stored as a number. */
+function countCell(n: number, style?: CellStyle): XlsxCell {
+  return { v: n, t: "n", z: COUNT_FORMAT, s: { ...(style ?? {}), numFmt: COUNT_FORMAT } };
+}
+
+/** A summary value that is a plain whole number ("47") becomes a count cell. */
+function valueCell(value: string, style?: CellStyle): XlsxCell {
+  return /^\d+$/.test(value) ? countCell(Number(value), style) : cell(value, style);
 }
 
 function blank(style?: CellStyle): XlsxCell {
   return { v: "", t: "s", ...(style ? { s: style } : {}) };
+}
+
+/** The net-activity rows as numeric cells, keyed by the label they print under. */
+function netCells(net: ReportNet, style: CellStyle): [string, XlsxCell][] {
+  return [
+    [NET_LABELS.bank, moneyCell(net.bankNet, style)],
+    [NET_LABELS.ledger, moneyCell(net.ledgerNet, style)],
+    ...(net.addedNet !== 0
+      ? ([["Bank items added to the reconciliation by you", moneyCell(net.addedNet, style)]] as [string, XlsxCell][])
+      : []),
+    [NET_LABELS.difference, moneyCell(net.difference, style)],
+  ];
 }
 
 // ---- Main export function --------------------------------------------
@@ -195,8 +235,10 @@ export async function downloadExcelWorksheet(ctx: ExcelExportContext): Promise<v
  * Build the workbook. Everything it prints comes from the shared report
  * model (report-model.ts), which is what the unit tests check.
  *
- * SAFETY: every cell is written as an explicit string ({ t: "s" }) — that
- * is what stops a description like "=HYPERLINK(...)" becoming a formula.
+ * SAFETY: every TEXT cell is written as an explicit string ({ t: "s" }) —
+ * that is what stops a description like "=HYPERLINK(...)" becoming a
+ * formula. The only numeric cells are amounts and counts that Reconly
+ * computed itself (moneyCell / countCell); no cell is ever a formula.
  */
 export async function buildExcelWorkbook(ctx: ExcelExportContext) {
   const XLSX = (await import("xlsx-js-style")).default;
@@ -251,7 +293,7 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       row(
         cell(l.date,        data),
         cell(l.description, data),
-        numCell(l.amount,   amount),
+        moneyCell(l.amountCents, amount),
         prov ? cell(l.source, { ...data, ...muted, fill: data.fill }) : blank(),
         blank(),
         blank(),
@@ -265,7 +307,9 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     lines: PairLine[],
     data: CellStyle,
     amount: CellStyle,
-    sixth: (l: PairLine) => XlsxCell
+    sixth: (l: PairLine) => XlsxCell,
+    /** Extra cells after the source columns (e.g. a note). */
+    trailing: (l: PairLine) => XlsxCell[] = () => []
   ) => {
     for (const l of lines) {
       const bold: CellStyle = l.kind === "group" ? { ...data, font: { ...data.font, bold: true } } : data;
@@ -273,9 +317,17 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       row(
         cell(l.bankDate,         bold),
         cell(l.bankDescription,  label),
-        numCell(l.bankAmount,    amount),
+        moneyCell(l.bankAmountCents, amount),
         cell(l.booksDate,        data),
-        cell(l.booksDescription, bold),
+        cell(
+          // A group's total is a SUBTOTAL of the entries listed under it.
+          // It is written here as text, never in an amount column, so
+          // adding up a column cannot count the group twice.
+          l.kind === "group" && l.groupTotalCents !== null
+            ? `${l.booksDescription} — group total ${dollars(l.groupTotalCents)} (subtotal of the entries below, not an extra amount)`
+            : l.booksDescription,
+          bold
+        ),
         sixth(l),
         ...(prov
           ? [
@@ -283,6 +335,7 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
               cell(l.booksSource, { ...data, ...muted, fill: data.fill }),
             ]
           : []),
+        ...trailing(l),
       );
       r++;
     }
@@ -297,27 +350,32 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
   fullRow("About this report", S.reportTitle, undefined);
   spacer();
 
-  const kvRows: [string, string][] = [
-    ["Account", ctx.accountName],
-    ["Period", periodLabel],
+  const kvRows: [string, XlsxCell][] = [
+    ["Account", cell(ctx.accountName, S.kvValue)],
+    ["Period", cell(periodLabel, S.kvValue)],
   ];
-  if (ctx.openingBalance !== null) kvRows.push(["Opening balance", dollars(ctx.openingBalance)]);
-  if (ctx.closingBalance !== null) kvRows.push(["Closing balance (bank)", dollars(ctx.closingBalance)]);
-  kvRows.push([
-    "Unexplained difference",
-    ctx.reconciled ? "$0.00" : dollars(Math.abs(ctx.unexplainedDifference)),
-  ]);
+  if (ctx.openingBalance !== null) kvRows.push(["Opening balance", moneyCell(ctx.openingBalance, S.kvValue)]);
+  if (ctx.closingBalance !== null) kvRows.push(["Closing balance (bank)", moneyCell(ctx.closingBalance, S.kvValue)]);
+  // Signed net activity: bank minus ledger. Transaction totals, not
+  // account balances — and never an absolute value without its direction.
+  kvRows.push(...netCells(model.net, S.kvValue));
   // Imported / in use / set aside — only when rows were repeated.
-  kvRows.push(...model.statusSummary, ...model.importSummary);
+  for (const [label, value] of [...model.statusSummary, ...model.importSummary]) {
+    kvRows.push([label, valueCell(value, S.kvValue)]);
+  }
 
   for (const [label, value] of kvRows) {
     row(
       cell(label, S.kvLabel),
-      cell(value, S.kvValue),
+      value,
       ...Array(COLS - 2).fill(blank())
     );
     r++;
   }
+  fullRow(
+    `${NET_LABELS.scope} A negative difference means bank net activity is the lower figure. The size of a difference does not indicate its cause.`,
+    S.disclaimer
+  );
 
   spacer();
   fullRow(verdictText, verdictStyle);
@@ -349,7 +407,14 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       ...sourceHeaders,
     );
     r++;
-    pairRows(model.matchedLines, S.data, S.amount, (l) => numCell(l.booksAmount, S.amount));
+    pairRows(model.matchedLines, S.data, S.amount, (l) => moneyCell(l.booksAmountCents, S.amount));
+    if (model.buckets.acceptedComposites.length > 0) {
+      fullRow(
+        "Grouped matches: the bank amount appears once, on the group's first row, and each records entry appears once below it. " +
+          "The group total is shown as text only, so adding up either amount column counts every transaction exactly once.",
+        S.note
+      );
+    }
   }
 
   spacer();
@@ -384,25 +449,30 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     spacer();
   }
 
-  // ---- Sub-group: in records, not cleared (unresolved) ----
-  fullRow("In your records but not yet cleared by your bank", S.subHead);
+  // ---- Sub-group: in records only (unresolved; cause not established) ----
+  fullRow("In your records only — no confirmed bank match", S.subHead);
   if (missingFromBank.length === 0) {
-    row(cell("None — every entry in your records has cleared the bank.", S.data), ...Array(COLS - 1).fill(blank()));
+    row(cell("None — every entry in your records has a confirmed bank match or was marked by you as expected.", S.data), ...Array(COLS - 1).fill(blank()));
     r++;
   } else {
+    fullRow(
+      "These entries have no confirmed bank match. The cause is not established: an entry may be waiting to clear, " +
+        "may have been entered with a different amount, or may not belong. They are not assumed to be timing differences.",
+      S.note
+    );
     sideTable(missingFromBank, S.attentionData, S.attentionAmount);
   }
   spacer();
 
-  // ---- Sub-group: marked as outstanding (resolved — timing only) ----
+  // ---- Sub-group: marked by the user as expected to clear later ----
   if (acknowledged.length > 0) {
     fullRow(
-      `Marked as outstanding — known timing difference  (${acknowledged.length})`,
+      `Marked by you as expected to clear later  (${acknowledged.length})`,
       S.subHeadResolved
     );
     fullRow(
-      "These are in your records but your bank hasn't processed them yet. " +
-        "This is a normal timing difference — no action needed.",
+      "You marked these records entries as expected to clear the bank later. " +
+        "This is your classification; Reconly has not verified it, and they remain unmatched.",
       S.note
     );
     sideTable(acknowledged, S.resolvedData, S.resolvedAmount);
@@ -421,17 +491,31 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     row(
       cell("Bank date",        S.colHeader),
       cell("Bank description", S.colHeader),
-      cell("Amount",           S.colHeader),
+      cell("Bank amount",      S.colHeader),
       cell("Books date",       S.colHeader),
       cell("Books description",S.colHeader),
-      cell("Note",             S.colHeader),
+      cell("Books amount",     S.colHeader),
       ...sourceHeaders,
+      cell("Note",             S.colHeader),
     );
     r++;
 
     const noteStyle: CellStyle = { ...S.attentionData, ...muted, fill: S.attentionData.fill };
-    pairRows(model.reviewLines, S.attentionData, S.attentionAmount, (l) =>
-      cell(l.kind === "part" ? `entry amount ${l.booksAmount}` : l.note, noteStyle)
+    pairRows(
+      model.reviewLines,
+      S.attentionData,
+      S.attentionAmount,
+      (l) => moneyCell(l.booksAmountCents, S.attentionAmount),
+      (l) => [
+        cell(
+          // An entry listed as one OPTION of an undecided group can appear
+          // under several options, so its amount is text, not a number.
+          l.kind === "part" && l.booksAmountCents === null
+            ? `entry amount ${l.booksAmount} — one of several options, not counted`
+            : l.note,
+          noteStyle
+        ),
+      ]
     );
     spacer();
   }
@@ -446,17 +530,26 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       cell("Amount",           S.colHeader),
       cell("Side",             S.colHeader),
       cell("Source",           S.colHeader),
-      cell("Why it is listed", S.colHeader),
+      cell("Listed as",        S.colHeader),
+      cell("Why it was flagged (detection)", S.colHeader),
+      cell("Automatic step",   S.colHeader),
+      cell("Your decision",    S.colHeader),
+      cell("Current status",   S.colHeader),
     );
     r++;
+    const why: CellStyle = { ...data, ...muted, fill: data.fill };
     for (const l of lines) {
       row(
         cell(l.date,        data),
         cell(l.description, data),
-        numCell(l.amount,   amount),
+        moneyCell(l.amountCents, amount),
         cell(l.side,        data),
         cell(l.source,      data),
-        cell(`${l.status}. ${l.reason}`, { ...data, ...muted, fill: data.fill }),
+        cell(l.status,      data),
+        cell(l.detection,   why),
+        cell(l.automatic,   why),
+        cell(l.decision,    why),
+        cell(l.currentStatus, why),
       );
       r++;
     }
@@ -483,7 +576,7 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     );
     fullRow(
       "These rows ARE counted in this reconciliation. They look like they may be the same row imported twice, " +
-        "but the files do not prove it, so nothing was set aside.",
+        "but the files do not prove it, so no row was set aside automatically. They still need a decision.",
       S.note
     );
     duplicateTable(model.possibleDuplicateLines, S.attentionData, S.attentionAmount);
@@ -528,15 +621,19 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     { wch: 13 }, // C  amount
     { wch: 14 }, // D  date (books side)
     { wch: 38 }, // E  description (books side)
-    { wch: 38 }, // F  note / books amount
-    ...(prov ? [{ wch: 30 }, { wch: 30 }] : []), // G, H  source file · row
+    { wch: 22 }, // F  books amount / listed as
+    { wch: 44 }, // G  source file · row / detection
+    { wch: 44 }, // H  source file · row / automatic step
+    { wch: 44 }, // I  note / your decision
+    { wch: 44 }, // J  current status
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
 
   // ================================================================
   // FINANCIAL SUMMARY worksheet (second sheet; the Reconciliation sheet
-  // above is unchanged). Same string-only cells → no formula injection.
+  // above). Text cells are explicit strings → no formula injection; amounts
+  // and counts are numeric cells computed by Reconly.
   // ================================================================
   if (model.summary) {
     const sum = model.summary;
@@ -548,17 +645,22 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       sMerges.push({ s: { r: data.length - 1, c: 0 }, e: { r: data.length - 1, c: WIDTH - 1 } });
     };
     const gap = () => data.push([blank()]);
-    const table = (head: string[], body: string[][], style: CellStyle = S.data) => {
+    /** Body values: text → string cell; a ready-made cell (money / count) is used as is. */
+    const table = (head: string[], body: (string | XlsxCell)[][], style: CellStyle = S.data) => {
       data.push(head.map((h) => cell(h, S.colHeader)));
-      for (const r of body) data.push(r.map((v) => cell(v, style)));
+      for (const r of body) data.push(r.map((v) => (typeof v === "string" ? cell(v, style) : v)));
     };
+    const netByLabel = new Map(netCells(model.net, S.kvValue));
 
     title("Financial Summary", S.reportTitle);
     title(model.verdict, verdictStyle);
     gap();
 
     title("Overall results", S.sectionHead);
-    for (const [label, value] of sum.executive) data.push([cell(label, S.kvLabel), cell(value, S.kvValue)]);
+    for (const [label, value] of sum.executive) {
+      data.push([cell(label, S.kvLabel), netByLabel.get(label) ?? valueCell(value, S.kvValue)]);
+    }
+    title(NET_LABELS.scope, S.disclaimer);
     gap();
 
     title("What this review shows", S.sectionHead);
@@ -569,7 +671,11 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     table(
       ["Month", "Bank rows in use", "Records rows in use", "Rows set aside", "Unmatched", "To review", "Duplicate questions", "Cross-month matches", "Findings", "Statement balance", "Coverage notes"],
       sum.months.map((m) => [
-        m.month, m.bankRows, m.recordsRows, m.setAside, m.unmatched, m.toReview, m.duplicateQuestions, m.crossMonth, m.findings, m.statementBalance, m.notes,
+        m.month,
+        ...[m.bankRows, m.recordsRows, m.setAside, m.unmatched, m.toReview, m.duplicateQuestions, m.crossMonth].map((v) =>
+          valueCell(v, S.data)
+        ),
+        m.findings, m.statementBalance, m.notes,
       ])
     );
     title(
@@ -584,8 +690,20 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
       data.push([cell("No statement information is available for this reconciliation.", S.data)]);
     } else {
       table(
-        ["Bank file", "Period", "Opening balance", "Net activity", "Closing balance", "Difference", "Result", "Explanation"],
-        sum.statements.map((s) => [s.file, s.period, s.opening, s.netActivity, s.closing, s.difference, s.status, s.explanation])
+        ["Bank file", "Period", "Opening balance", "Opening balance source", "Net activity", "Rows", "Closing balance", "Closing balance source", "Difference", "Result", "Explanation"],
+        sum.statements.map((s) => [
+          s.file,
+          s.period,
+          moneyCell(s.openingCents, S.amount),
+          s.openingNote,
+          moneyCell(s.netActivityCents, S.amount),
+          countCell(s.rowCount, S.data),
+          moneyCell(s.closingCents, S.amount),
+          s.closingNote,
+          s.differenceCents === null ? "Not computable" : moneyCell(s.differenceCents, S.amount),
+          s.status,
+          s.explanation,
+        ])
       );
       title(
         "Every row read from each file is used, including rows later set aside as repeated. A verified statement means the file's balances agree with its own transactions — not that the period is reconciled.",
@@ -600,7 +718,7 @@ export async function buildExcelWorkbook(ctx: ExcelExportContext) {
     } else {
       table(
         ["Type", "Date", "Description", "Amount", "Source"],
-        sum.exceptions.map((e) => [e.type, e.date, e.description, e.amount, e.source]),
+        sum.exceptions.map((e) => [e.type, e.date, e.description, moneyCell(e.amountCents, S.attentionAmount), e.source]),
         S.attentionData
       );
     }

@@ -305,17 +305,17 @@ function describe(code: EvidenceCode, sample: Row, files: string[]): string {
     case "reference":
       return `Same date, amount and description, and the same reference number (${sample.ref}) ${where}.`;
     case "transaction-id-account-unconfirmed":
-      return `Same date, amount and transaction ID (${sample.trueId}) ${where}, but the descriptions differ and only one of the files names an account, so Reconly can't confirm both rows belong to the same account — nothing was set aside.`;
+      return `Same date, amount and transaction ID (${sample.trueId}) ${where}, but the descriptions differ and only one of the files names an account, so Reconly can't confirm both rows belong to the same account — no row was set aside automatically.`;
     case "reference-not-reliable":
-      return `Same date, amount, description and reference (${sample.ref}) ${where}. That reference isn't distinctive enough to prove these are one transaction (it may be a row counter or a repeated label), so nothing was set aside.`;
+      return `Same date, amount, description and reference (${sample.ref}) ${where}. That reference isn't distinctive enough to prove these are one transaction (it may be a row counter or a repeated label), so no row was set aside automatically.`;
     case "balance-description-differs":
       return `Same date, amount and running balance ${where}, but the descriptions differ — check whether this is one transaction described two ways.`;
     case "reference-description-differs":
       return `Same date, amount and reference number (${sample.ref}) ${where}, but the descriptions differ — check whether this is one transaction described two ways.`;
     case "reference-differs":
-      return `Same date, amount and description ${where}, but different reference numbers. Reference numbers can change between exports, so this may be one transaction or two — nothing was set aside.`;
+      return `Same date, amount and description ${where}, but different reference numbers. Reference numbers can change between exports, so this may be one transaction or two — no row was set aside automatically.`;
     case "values-only":
-      return `Same date, amount and description ${where}. The files don't both carry a transaction ID, reference or running balance that could tell a repeated row from two separate transactions, so nothing was set aside.`;
+      return `Same date, amount and description ${where}. The files don't both carry a transaction ID, reference or running balance that could tell a repeated row from two separate transactions, so no row was set aside automatically.`;
     case "same-file-same-id":
       return `The same transaction ID (${sample.trueId}) appears more than once ${where}, with the same date, amount and description.`;
     case "same-file-same-balance":

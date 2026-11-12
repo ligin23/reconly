@@ -13,6 +13,7 @@ import type { Txn } from "@/lib/recon/types";
 import { money } from "@/lib/sample-data";
 import { formatPeriod } from "@/lib/data/utils";
 import { sourceLabel } from "@/lib/import/provenance";
+import { describeDuplicateDecision } from "@/lib/import/duplicate-decision";
 import {
   groupStatus,
   importCounts,
@@ -132,6 +133,7 @@ function GroupCard({
   if (!first) return null;
   const inUse = rows.filter((t) => !setAside.has(t.id));
   const suggested = group.suggestedSetAsideIds.filter((id) => !setAside.has(id));
+  const summary = describeDuplicateDecision(group, state);
 
   return (
     <div
@@ -159,7 +161,10 @@ function GroupCard({
         </span>
       </div>
 
-      <ul style={{ margin: "10px 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 5 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--ink-3)", marginTop: 10 }}>
+        Why these rows were flagged
+      </div>
+      <ul style={{ margin: "4px 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 5 }}>
         {group.evidence.map((e) => (
           <li
             key={e.code}
@@ -175,6 +180,29 @@ function GroupCard({
           </li>
         ))}
       </ul>
+
+      {/* Detection evidence above never changes. What happened since — and
+          what counts right now — is stated separately, from live state. */}
+      <dl
+        data-testid="dup-decision"
+        style={{
+          margin: "10px 0 0",
+          display: "grid",
+          gridTemplateColumns: "max-content 1fr",
+          columnGap: 10,
+          rowGap: 3,
+          fontSize: 12.5,
+          color: "var(--ink-2)",
+          lineHeight: 1.45,
+        }}
+      >
+        <dt style={{ fontWeight: 600, color: "var(--ink)" }}>Automatic step</dt>
+        <dd data-testid="dup-decision-automatic" style={{ margin: 0 }}>{summary.automatic}</dd>
+        <dt style={{ fontWeight: 600, color: "var(--ink)" }}>Your decision</dt>
+        <dd data-testid="dup-decision-user" style={{ margin: 0 }}>{summary.decision}</dd>
+        <dt style={{ fontWeight: 600, color: "var(--ink)" }}>Current status</dt>
+        <dd data-testid="dup-decision-status" style={{ margin: 0 }}>{summary.status}</dd>
+      </dl>
 
       <div style={{ marginTop: 10, borderTop: "1px solid var(--line-2)" }}>
         {rows.map((t) => {
