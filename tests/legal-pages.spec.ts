@@ -15,7 +15,9 @@ function watch(page: Page) {
   page.on("response", (r) => r.status() >= 400 && problems.push(`${r.status()} ${r.url()}`));
   page.on("request", (r) => {
     const u = new URL(r.url());
-    if (!["localhost", "127.0.0.1"].includes(u.hostname) && u.protocol !== "data:") offOrigin.push(r.url());
+    // Same origin as the page under test (localhost locally, the deployment on a preview).
+    const home = new URL(page.url() === "about:blank" ? r.url() : page.url());
+    if (u.origin !== home.origin && u.protocol !== "data:") offOrigin.push(r.url());
   });
   return { problems, offOrigin };
 }
@@ -155,7 +157,7 @@ test("every internal link on the legal pages resolves", async ({ page, request }
     const hrefs = await page.locator("a[href]").evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).href));
     for (const href of hrefs) {
       const u = new URL(href);
-      expect(["localhost", "127.0.0.1"]).toContain(u.hostname); // no external links
+      expect(u.origin).toBe(new URL(page.url()).origin); // no external links
       const key = u.pathname;
       if (seen.has(key)) continue;
       seen.add(key);

@@ -16,7 +16,9 @@ function watchNetwork(page: Page) {
   page.on("request", (r) => {
     const u = new URL(r.url());
     if (u.pathname.startsWith("/api/copilot")) copilot.push(r.method() + " " + r.url());
-    if (!["localhost", "127.0.0.1"].includes(u.hostname) && !["data:", "blob:"].includes(u.protocol)) offOrigin.push(r.url());
+    // Same origin as the page under test (localhost locally, the deployment on a preview).
+    const home = new URL(page.url() === "about:blank" ? r.url() : page.url());
+    if (u.origin !== home.origin && !["data:", "blob:"].includes(u.protocol)) offOrigin.push(r.url());
   });
   page.on("console", (m) => m.type() === "error" && problems.push("console: " + m.text()));
   page.on("pageerror", (e) => problems.push("pageerror: " + e.message));
