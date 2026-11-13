@@ -73,6 +73,7 @@ import {
   ADVANCED_DEMO_FILES,
 } from "@/lib/demo/advanced-demo";
 import { buildReconContext } from "@/lib/copilot/context-builder";
+import { COPILOT_UI_ENABLED } from "@/lib/copilot/feature-gate";
 
 type Screen = "upload" | "mapping" | "processing" | "dashboard" | "review" | "history";
 
@@ -1820,6 +1821,23 @@ export function AppShell({ autoStart }: { autoStart?: "advanced-demo" } = {}) {
     setScreen("dashboard");
   };
 
+  /**
+   * Delete ONE saved reconciliation from IndexedDB (History → Delete, after
+   * confirmation). The list is re-read from storage so it shows what is
+   * really persisted. If the deleted record is the one open now, the working
+   * state stays on screen as unsaved work — nothing in memory is discarded.
+   * Rejects (and changes nothing in the UI) if storage fails.
+   */
+  const deleteSavedRecord = async (record: ReconciliationRecord): Promise<void> => {
+    await repository.deleteReconciliation(record.id);
+    const records = await repository.listReconciliations().catch(() =>
+      // Deleted, but the re-read failed: drop it from the visible list anyway.
+      savedRecords.filter((r) => r.id !== record.id)
+    );
+    setSavedRecords(records);
+    if (currentRecordId === record.id) setCurrentRecordId(null);
+  };
+
   /** Save a brand-new reconciliation (called from SaveDialog). */
   const handleSaveFromDialog = (values: SaveFormValues) => {
     if (!engineOutput) return;
@@ -2037,8 +2055,10 @@ export function AppShell({ autoStart }: { autoStart?: "advanced-demo" } = {}) {
     duplicateGroups,
   ]);
 
-  // Shown only on the results screens (dashboard/review) of an analyzed run.
+  // Shown only on the results screens (dashboard/review) of an analyzed run,
+  // and only while the assistant is enabled — it is ON HOLD (feature-gate.ts).
   const copilotVisible =
+    COPILOT_UI_ENABLED &&
     analyzed && engineOutput !== null && (screen === "dashboard" || screen === "review");
 
   // /app/demo: start the Advanced Demo once. The ref keeps it to a single
@@ -2233,6 +2253,8 @@ export function AppShell({ autoStart }: { autoStart?: "advanced-demo" } = {}) {
               <HistoryScreen
                 records={savedRecords}
                 onOpen={openFromHistory}
+                onDelete={deleteSavedRecord}
+                currentRecordId={currentRecordId}
               />
             )}
           </div>

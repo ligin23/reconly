@@ -235,7 +235,8 @@ test("FAQ items open and close by mouse and keyboard", async ({ page }) => {
   await page.keyboard.press("Enter");
   await expect(stored).toHaveAttribute("open", "");
   await expect(stored).toContainText("not uploaded to Reconly");
-  await expect(stored).toContainText("AI assistant");
+  await expect(stored).toContainText("you can delete it at any time from Past reconciliations");
+  await expect(stored).not.toContainText("AI assistant");
   // The accountant answer carries the existing disclaimer.
   const accountant = items.filter({ hasText: "Does Reconly replace an accountant?" });
   await accountant.locator("summary").click();

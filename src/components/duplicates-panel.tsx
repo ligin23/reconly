@@ -76,39 +76,53 @@ function Chip({ tone, children }: { tone: "warn" | "good" | "muted"; children: R
   );
 }
 
+/**
+ * The columns KEPT from the uploaded row. New imports keep only the columns
+ * Reconly uses (parser data minimization); reconciliations saved before that
+ * change may still hold every column. Never suggests other columns exist.
+ */
 function OriginalRow({ txn }: { txn: Txn }) {
   const entries = Object.entries(txn.raw ?? {});
   if (entries.length === 0) {
     return (
       <div style={{ fontSize: 12, color: "var(--ink-3)", padding: "6px 0 2px" }}>
-        The original columns weren&apos;t kept for this row.
+        No columns from the original row were kept for this row.
       </div>
     );
   }
   return (
-    <div
-      data-testid="dup-original-row"
-      className="mono"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "max-content 1fr",
-        columnGap: 12,
-        rowGap: 2,
-        fontSize: 11.5,
-        color: "var(--ink-2)",
-        padding: "8px 10px",
-        marginTop: 6,
-        background: "var(--surface-2)",
-        border: "1px solid var(--line)",
-        borderRadius: "var(--r-sm, 8px)",
-      }}
-    >
-      {entries.map(([k, v]) => (
-        <div key={k} style={{ display: "contents" }}>
-          <span style={{ color: "var(--ink-3)" }}>{k}</span>
-          <span style={{ wordBreak: "break-word" }}>{v === "" ? "—" : v}</span>
-        </div>
-      ))}
+    <div style={{ marginTop: 6 }}>
+      <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-3)", marginBottom: 4 }}>
+        Columns kept from this row of the file
+      </div>
+      <div
+        data-testid="dup-original-row"
+        className="mono"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "max-content 1fr",
+          columnGap: 12,
+          rowGap: 2,
+          fontSize: 11.5,
+          color: "var(--ink-2)",
+          padding: "8px 10px",
+          background: "var(--surface-2)",
+          border: "1px solid var(--line)",
+          borderRadius: "var(--r-sm, 8px)",
+        }}
+      >
+        {entries.map(([k, v]) => (
+          <div key={k} style={{ display: "contents" }}>
+            <span style={{ color: "var(--ink-3)" }}>{k}</span>
+            <span style={{ wordBreak: "break-word" }}>{v === "" ? "—" : v}</span>
+          </div>
+        ))}
+      </div>
+      <div data-testid="dup-original-row-note" style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45 }}>
+        Only these columns are stored. Reconly keeps the columns it uses — dates, descriptions, amounts, references, IDs, account
+        and balance columns — and doesn&apos;t keep other columns from new imports. Reconciliations saved before this change may
+        show every column.
+      </div>
     </div>
   );
 }

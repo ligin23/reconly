@@ -6,7 +6,8 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { MobileMenu } from "@/components/landing/mobile-menu";
 import { TrackedLink } from "@/components/landing/tracked-link";
 import { TrackLandingView } from "@/components/landing/track-view";
-import { SITE_DESCRIPTION, SITE_TITLE } from "@/lib/site";
+import { DISCLAIMER, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/site";
+import { SiteFooter } from "@/components/landing/site-footer";
 // Real screenshots of Reconly, captured from the fictional Advanced Demo.
 import resultsShot from "../../public/landing/results-overview.png";
 import statusShot from "../../public/landing/results-status.png";
@@ -41,8 +42,6 @@ const FEEDBACK_URL = (() => {
   }
 })();
 
-const DISCLAIMER =
-  "Reconly helps you check whether your records match your bank. It is not accounting or tax advice. For decisions about how to record transactions or file taxes, consult a qualified accountant.";
 
 // ---- small building blocks --------------------------------------------
 
@@ -198,8 +197,8 @@ const FAQS: { q: string; a: ReactNode }[] = [
     a: (
       <>
         Your files are read and reconciled in your browser; they are not uploaded to Reconly. If you choose to save a reconciliation, it is
-        stored in this browser on this device. The optional AI assistant is the exception: when you ask it a question, details of the
-        current reconciliation are sent to an AI service. See <a href="#privacy" className="font-medium text-accent-ink underline underline-offset-2">Privacy and your data</a> for the details.
+        stored in this browser on this device, and you can delete it at any time from Past reconciliations. See{" "}
+        <a href="#privacy" className="font-medium text-accent-ink underline underline-offset-2">Privacy and your data</a> for the details.
       </>
     ),
   },
@@ -426,15 +425,15 @@ export default function LandingPage() {
               },
               {
                 title: "Saved reconciliations stay in this browser",
-                text: "If you save a reconciliation, it is stored in your browser's own storage (IndexedDB) on this device. Reconly doesn't keep a copy, so it isn't available on other devices or browsers, and clearing your browser's site data deletes it. Anyone who can use this browser profile can open it.",
+                text: "If you save a reconciliation, it is stored in your browser's own storage (IndexedDB) on this device — the file names and the columns Reconly uses from each row (dates, descriptions, amounts, references, transaction IDs, account and balance columns). Other columns in newly imported files aren't kept. Reconly doesn't keep a copy, so it isn't synced to other devices or browsers. You can delete any saved reconciliation from Past reconciliations; clearing this site's data in your browser settings removes all of them. Anyone who can use this browser profile can open them.",
               },
               {
                 title: "Reports are created on your device",
                 text: "PDF and Excel exports are generated in your browser and downloaded directly; they are not sent anywhere.",
               },
               {
-                title: "The AI assistant is optional — and does send data",
-                text: "If you ask the assistant a question, your question and details of the current reconciliation — transaction dates, descriptions and amounts — are sent through Reconly's server to Anthropic's AI service to write the answer. Long digit sequences that could be account or card numbers are shortened to their last four digits first. Reconly's server doesn't store your question or the transaction details. To limit abuse, your IP address is kept in a usage counter for up to an hour. Don't use the assistant if you'd rather your data stayed on your device.",
+                title: "No AI features are active",
+                text: "Reconly's matching is rule-based and runs in your browser. An AI assistant that explained results was previously part of the app; it is currently turned off, and Reconly sends no reconciliation data to any AI service. If AI features return, this page and the Privacy Policy will be updated first.",
               },
             ].map((c) => (
               <div key={c.title} className="rounded-xl border border-line bg-surface p-6 shadow-card">
@@ -444,7 +443,9 @@ export default function LandingPage() {
             ))}
           </div>
           <p className="mt-6 max-w-3xl text-[14px] leading-relaxed text-ink-2">
-            Like any website, Reconly is served by a hosting provider (Vercel), which receives standard request information such as your IP address when you load a page. There are no user accounts, and this page doesn't use advertising or tracking cookies.
+            Like any website, Reconly is served by a hosting provider (Vercel), which receives standard request information such as your IP address when you load a page — so not every piece of information stays on your device. There are no user accounts, and Reconly doesn't use analytics, advertising or tracking cookies. Draft{" "}
+            <a href="/privacy" className="font-medium text-accent-ink underline underline-offset-2">Privacy Policy</a> and{" "}
+            <a href="/terms" className="font-medium text-accent-ink underline underline-offset-2">Terms of Service</a> are being prepared for legal review.
           </p>
         </Section>
 
@@ -495,27 +496,7 @@ export default function LandingPage() {
         </section>
       </main>
 
-      <footer className="border-t border-line bg-surface px-4 py-10 sm:px-6">
-        <div className="mx-auto flex max-w-6xl flex-col gap-6 md:flex-row md:items-start md:justify-between">
-          <div className="max-w-xl">
-            <Logo size={24} />
-            <p className="mt-3 text-[13.5px] leading-relaxed text-ink-2">{DISCLAIMER}</p>
-          </div>
-          <nav aria-label="Footer">
-            <ul className="flex flex-wrap gap-x-6 gap-y-2 text-[14px]">
-              <li><a href="#features" className="text-ink-2 hover:text-ink">Features</a></li>
-              <li><a href="#how-it-works" className="text-ink-2 hover:text-ink">How it works</a></li>
-              <li><a href="#privacy" className="text-ink-2 hover:text-ink">Privacy and your data</a></li>
-              <li><a href="#faq" className="text-ink-2 hover:text-ink">FAQ</a></li>
-              <li>
-                <TrackedLink href="/app" target="app" placement="final" className="text-ink-2 hover:text-ink">
-                  Open app
-                </TrackedLink>
-              </li>
-            </ul>
-          </nav>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

@@ -4,6 +4,8 @@
 // Public, unauthenticated endpoint holding the Anthropic API
 // key. Treat every request as hostile. Order of the walls:
 //
+//   0. Feature gate (AI on hold)   → 503  (before ANYTHING else:
+//      no body read, no Upstash, no Anthropic — see feature-gate.ts)
 //   1. Origin/Referer check        → 403
 //   2. Payload size cap (64 KB)    → 413
 //   3. Strict Zod schema           → 400  (also blocks proxy abuse)
@@ -23,6 +25,7 @@ import {
   COPILOT_SYSTEM_PROMPT,
 } from "@/lib/copilot/system-prompt";
 import { checkRateLimit } from "@/lib/copilot/rate-limit";
+import { COPILOT_UNAVAILABLE_MESSAGE, isCopilotServerEnabled } from "@/lib/copilot/feature-gate";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -166,6 +169,15 @@ async function callOllama(model: string, userMessage: string): Promise<ModelRepl
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // -- Wall 0: feature gate. The assistant is on hold; while disabled the
+  // request body is never read and nothing is forwarded or counted.
+  if (!isCopilotServerEnabled()) {
+    return Response.json(
+      { error: COPILOT_UNAVAILABLE_MESSAGE },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+
   const startedAt = Date.now();
 
   // -- Wall 1: origin --

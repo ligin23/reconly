@@ -12,6 +12,7 @@
 
 import Papa from "papaparse";
 import type { Txn } from "@/lib/recon/types";
+import { DUPLICATE_EVIDENCE_HEADERS } from "@/lib/import/duplicates";
 
 // ---- Date helpers ---------------------------------------------------
 
@@ -569,6 +570,12 @@ export type ParseDiagnostics = {
   statementPeriod: { start: string; end: string } | null;
   /** Skipped rows whose date was missing or unreadable (subset of issueCount). */
   invalidDateRows: number;
+  /**
+   * Data minimization: header names of the columns NOT kept in `Txn.raw`
+   * (never their values). Everything else in a row is kept — see
+   * `retainedColumns` in parseCsvDetailed. In memory only; not persisted.
+   */
+  omittedColumns: string[];
 };
 
 export type ParseResult = { txns: Txn[]; diagnostics: ParseDiagnostics };
@@ -739,6 +746,39 @@ export function parseCsvDetailed(
   };
 
   /** The running balance printed on a transaction row, if any. */
+  // ---- Data minimization (new imports) -----------------------------
+  // `Txn.raw` keeps only the columns some feature reads after parsing:
+  //   - the mapped columns (date, description, amount / debit / credit,
+  //     reference) — shown as the original row in duplicate review;
+  //   - the detected running-balance column;
+  //   - every column duplicate / overlap detection, statement checks and the
+  //     month review read by header name (IDs, references, balances,
+  //     account columns — DUPLICATE_EVIDENCE_HEADERS), mapped or not.
+  // Everything else (memo, notes, category, addresses…) is used by nothing
+  // and is not kept. All parse-time work (dates, amounts, balance rows,
+  // running balances) reads the FULL row before it is trimmed.
+  const retainedColumns = new Set<string>(
+    [
+      effectiveMap.date,
+      effectiveMap.description,
+      effectiveMap.amount,
+      effectiveMap.debit,
+      effectiveMap.credit,
+      effectiveMap.reference,
+      balanceCol,
+      ...headers.filter((h) => DUPLICATE_EVIDENCE_HEADERS.includes(h)),
+    ].filter((c): c is string => Boolean(c))
+  );
+  const omittedColumns = headers.filter((h) => h !== "" && !retainedColumns.has(h));
+  const retainedRow = (row: Record<string, string>): Record<string, string> => {
+    const kept: Record<string, string> = {};
+    for (const h of retainedColumns) {
+      const v = row[h];
+      if (typeof v === "string") kept[h] = v;
+    }
+    return kept;
+  };
+
   const readRunningBalance = (row: Record<string, string>): { runningBalance?: number } => {
     if (!balanceCol) return {};
     const text = (row[balanceCol] ?? "").trim();
@@ -814,7 +854,7 @@ export function parseCsvDetailed(
         description: descRaw.trim(),
         amount,
         reference: reference?.trim() || undefined,
-        raw: row,
+        raw: retainedRow(row),
         ...(options.sourceFile !== undefined ? { sourceFile: options.sourceFile } : {}),
         sourceLine: line,
         ...readRunningBalance(row),
@@ -837,6 +877,7 @@ export function parseCsvDetailed(
       statement,
       statementPeriod: findStatementPeriod(csvText, lineOffset, dayFirst),
       invalidDateRows,
+      omittedColumns,
     },
   };
 }

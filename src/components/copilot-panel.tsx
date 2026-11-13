@@ -30,12 +30,20 @@ const STARTER_QUESTIONS = [
   "What's making up the difference?",
 ];
 
+// Must describe exactly what context-builder.ts / schema.ts send (Phase 6A
+// audit). Provider training/retention terms are NOT claimed here: they are
+// Anthropic's to state and have not been verified for this account.
 const NOTICE_TEXT =
-  "When you ask the assistant a question, the transaction dates, descriptions, " +
-  "and amounts from this reconciliation are sent securely to an AI service " +
-  "(Anthropic) to generate the answer. Reconly never stores this data on a " +
-  "server, and it is not used to train AI models. Don't use the assistant if " +
-  "you'd prefer this data stays only on your device.";
+  "When you ask the assistant a question, your question and details of this " +
+  "reconciliation — summary totals and status, plus the dates, descriptions " +
+  "and amounts of unmatched items and suggested matches — are sent over HTTPS " +
+  "through Reconly's server to an AI service (Anthropic) to generate the " +
+  "answer. Long numbers that look like account or card numbers are shortened " +
+  "to their last four digits; names and other text are sent as written. " +
+  "Reconly's server doesn't save your question, the transaction details or " +
+  "the answer; Anthropic handles the request under its own terms. Your IP " +
+  "address is used for a usage limit that expires within an hour. Don't use " +
+  "the assistant if you'd prefer this data stays only on your device.";
 
 const DISCLAIMER_TEXT =
   "Explains your reconciliation results. Not accounting, tax, or financial advice.";

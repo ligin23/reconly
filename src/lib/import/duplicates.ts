@@ -103,21 +103,35 @@ export type DuplicateGroup = {
 // Header names are compared lower-cased and trimmed (the parser already
 // stores raw rows that way).
 
-const TRUE_ID_HEADERS = [
+export const TRUE_ID_HEADERS = [
   "transaction id", "transaction_id", "transactionid", "txn id", "txn_id", "txnid",
   "trans id", "trans_id", "transaction number", "transaction no", "transaction #",
   "fitid", "unique id", "unique identifier",
 ];
 /** A bare "id" column may be a transaction ID or just a row counter, so it
  *  is only trusted as much as a reference number. */
-const GENERIC_ID_HEADERS = ["id", "no", "no.", "#"];
-const REFERENCE_HEADERS = [
+export const GENERIC_ID_HEADERS = ["id", "no", "no.", "#"];
+export const REFERENCE_HEADERS = [
   "reference", "ref", "reference number", "ref number", "reference no", "ref no",
   "check #", "check number", "check no", "check", "chk", "cheque number", "cheque no",
 ];
 const BALANCE_HEADERS = ["balance", "running balance", "running bal", "running bal.", "bal"];
-const ACCOUNT_HEADERS = [
+export const ACCOUNT_HEADERS = [
   "account", "account number", "account #", "account no", "account id", "account name",
+];
+
+/**
+ * Every column header this module (and statements.ts / months.ts through
+ * `accountOf`) reads from a row's original columns. The parser keeps these
+ * columns in `Txn.raw` for new imports and drops the rest (data
+ * minimization) — so ANY new header read here must be added to this list.
+ */
+export const DUPLICATE_EVIDENCE_HEADERS: readonly string[] = [
+  ...TRUE_ID_HEADERS,
+  ...GENERIC_ID_HEADERS,
+  ...REFERENCE_HEADERS,
+  ...BALANCE_HEADERS,
+  ...ACCOUNT_HEADERS,
 ];
 
 function pick(raw: Record<string, string>, headers: string[]): string {
